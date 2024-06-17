@@ -1,0 +1,16 @@
+[package]
+name = "curve"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+bytemuck = "1.16.0"
+encase = { version = "0.8.0", features = ["mint"] }
+env_logger = "0.11.3"
+glam = { version = "0.28.0", features = ["mint"] }
+mint = "0.5.9"
+pollster = "0.3.0"
+wgpu = "0.20.0"
+winit = "0.30.0"
