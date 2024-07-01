@@ -371,112 +371,181 @@ fn get_intensity(
         return result;
     }
 
-    // rescaling = (2 m + 1)!! / (2 m)!!
-    // convolved = (p0 + p1 t + p2 t^2 + p3 t^3 + p4 t^4)^m
-    var rescaling = 1.0;
     var convolved: array<f32, (4 * PARAM_M + 1)>;
     convolved[0] = 1.0;
     for (var i = 1u; i <= PARAM_M; i++) {
-        rescaling *= 1.0 + 1.0 / (2.0 * f32(i));
-        {
-            var degree = 4 * i;
-            while (degree > 3) {
-                convolved[degree] = (
-                    polynomial_p[0] * convolved[degree]
-                    + polynomial_p[1] * convolved[degree - 1]
-                    + polynomial_p[2] * convolved[degree - 2]
-                    + polynomial_p[3] * convolved[degree - 3]
-                    + polynomial_p[4] * convolved[degree - 4]
-                );
-                degree--;
-            }
+        for (var degree = 4 * i; degree >= 4; degree--) {
             convolved[degree] = (
                 polynomial_p[0] * convolved[degree]
                 + polynomial_p[1] * convolved[degree - 1]
                 + polynomial_p[2] * convolved[degree - 2]
                 + polynomial_p[3] * convolved[degree - 3]
-            );
-            degree--;
-            convolved[2] = (
-                polynomial_p[0] * convolved[degree]
-                + polynomial_p[1] * convolved[degree - 1]
-                + polynomial_p[2] * convolved[degree - 2]
-            );
-            degree--;
-            convolved[1] = (
-                polynomial_p[0] * convolved[degree]
-                + polynomial_p[1] * convolved[degree - 1]
-            );
-            degree--;
-            convolved[0] = (
-                polynomial_p[0] * convolved[degree]
+                + polynomial_p[4] * convolved[degree - 4]
             );
         }
+        convolved[3] = (
+            polynomial_p[0] * convolved[3]
+            + polynomial_p[1] * convolved[2]
+            + polynomial_p[2] * convolved[1]
+            + polynomial_p[3] * convolved[0]
+        );
+        convolved[2] = (
+            polynomial_p[0] * convolved[2]
+            + polynomial_p[1] * convolved[1]
+            + polynomial_p[2] * convolved[0]
+        );
+        convolved[1] = (
+            polynomial_p[0] * convolved[1]
+            + polynomial_p[1] * convolved[0]
+        );
+        convolved[0] = (
+            polynomial_p[0] * convolved[0]
+        );
     }
 
-    // integrate(rescaling * convolved * sqrt(q)) = rescaling * (quotient * sqrt(q) + remainder * integrate(1 / sqrt(q)))
-    // convolved * (q0 + q1 t + q2 t^2) = 1/2 * (q1 + 2 q2 t) * quotient + quotient' * (q0 + q1 t + q2 t^2) + remainder
-    // q2 * convolved[i - 1] + q1 * convolved[i] + q0 * convolved[i + 1]
-    // = (i + 1) * q2 * quotient[i] + (i + 3/2) * q1 * quotient[i + 1] + (i + 2) * q0 * quotient[i + 2]
-    var quotient: array<f32, (4 * PARAM_M + 2)>;
-    let quotient_degree = 4 * PARAM_M + 1;
-    let q1_over_q2 = select(polynomial_q[1] / polynomial_q[2], 0.0, polynomial_q[2] == 0.0);
-    let q0_over_q2 = select(polynomial_q[0] / polynomial_q[2], 0.0, polynomial_q[2] == 0.0);
-    {
-        var degree = quotient_degree;
-        quotient[degree] = (
-            convolved[degree - 1]
-        ) / (f32(degree) + 1.0);
-        degree--;
-        quotient[degree] = (
-            convolved[degree - 1]
-            + q1_over_q2 * convolved[degree]
-            - (f32(degree) + 1.5) * q1_over_q2 * quotient[degree + 1]
-        ) / (f32(degree) + 1.0);
-        degree--;
-        while (degree > 0) {
-            quotient[degree] = (
-                convolved[degree - 1]
-                + q1_over_q2 * convolved[degree]
-                + q0_over_q2 * convolved[degree + 1]
-                - (f32(degree) + 1.5) * q1_over_q2 * quotient[degree + 1]
-                - (f32(degree) + 2.0) * q0_over_q2 * quotient[degree + 2]
-            ) / (f32(degree) + 1.0);
-            degree--;
+    // q0 + q1 t + q2 t^2 = q2 ((t - sigma)^2 - delta)
+    let sigma = -select(polynomial_q[1] / polynomial_q[2], 0.0, polynomial_q[2] == 0.0) / 2.0;
+    let delta = -select(polynomial_q[0] / polynomial_q[2], 0.0, polynomial_q[2] == 0.0) + sigma * sigma;
+    let sqrt_q2 = select(sqrt(polynomial_q[2]), 0.0, polynomial_q[2] == 0.0);
+
+    var shifted: array<f32, (4 * PARAM_M + 1)>;
+    for (var i = 0u; i <= 4 * PARAM_M; i++) {
+        var coefficient = convolved[i];
+        for (var j = 0u; j <= i; j++) {
+            shifted[i - j] += coefficient;
+            coefficient *= f32(i - j) / f32(j + 1) * sigma;
         }
-        quotient[degree] = (
-            q1_over_q2 * convolved[degree]
-            + q0_over_q2 * convolved[degree + 1]
-            - (f32(degree) + 1.5) * q1_over_q2 * quotient[degree + 1]
-            - (f32(degree) + 2.0) * q0_over_q2 * quotient[degree + 2]
-        ) / (f32(degree) + 1.0);
     }
-    let remainder = (
-        q0_over_q2 * convolved[0]
-        - 0.5 * q1_over_q2 * quotient[0]
-        - q0_over_q2 * quotient[1]
-    ) * polynomial_q[2];
+    var integrated: array<f32, (4 * PARAM_M + 1)>;
+    for (var i = 0u; i <= 4 * PARAM_M; i++) {
+        var coefficient = shifted[i] / f32(i + 2);
+        for (var j = 0u; j <= i; j += 2u) {
+            integrated[i - j] += coefficient;
+            coefficient *= f32(i - j - 1) / f32(i - j) * delta;
+        }
+    }
+    // var unshifted: array<f32, (4 * PARAM_M + 1)>;
+    // for (var i = 0u; i <= 4 * PARAM_M; i++) {
+    //     var coefficient = integrated[i];
+    //     for (var j = 0u; j <= i; j++) {
+    //         unshifted[i - j] += coefficient;
+    //         coefficient *= (i - j) / (j + 1) * (-sigma);
+    //     }
+    // }
+
+
+
+    // integrate(p * sqrt(q)) = quotient * sqrt(q) + remainder * integrate(1 / sqrt(q))
+    // let q1_over_q2 = select(polynomial_q[1] / polynomial_q[2], 0.0, polynomial_q[2] == 0.0);
+    // let q0_over_q2 = select(polynomial_q[0] / polynomial_q[2], 0.0, polynomial_q[2] == 0.0);
+    // let q1_over_q2_pow_2 = q1_over_q2 * q1_over_q2;
+    // let q1_over_q2_pow_3 = q1_over_q2 * q1_over_q2_pow_2;
+    // let q1_over_q2_pow_4 = q1_over_q2 * q1_over_q2_pow_3;
+    // let q1_over_q2_pow_5 = q1_over_q2 * q1_over_q2_pow_4;
+    // let q0_over_q2_pow_2 = q0_over_q2 * q0_over_q2;
+    // let q0_over_q2_pow_3 = q0_over_q2 * q0_over_q2_pow_2;
+
+    // let remainder = (
+    //       polynomial_p[0] * (1./8.)
+    //     + polynomial_p[1] * (-1./16. * q1_over_q2)
+    //     + polynomial_p[2] * (5./128. * q1_over_q2_pow_2 - 1./32. * q0_over_q2)
+    //     + polynomial_p[3] * (-7./256. * q1_over_q2_pow_3 + 3./64. * q0_over_q2 * q1_over_q2)
+    //     + polynomial_p[4] * (21./1024. * q1_over_q2_pow_4 - 7./128. * q0_over_q2 * q1_over_q2_pow_2 + 1./64. * q0_over_q2_pow_2)
+    // ) * (4.0 * q0_over_q2 - q1_over_q2_pow_2) * polynomial_q[2];
+    // var quotient = array(
+    //       polynomial_p[0] * (1./4. * q1_over_q2)
+    //     + polynomial_p[1] * (-1./8. * q1_over_q2_pow_2 + 1./3. * q0_over_q2)
+    //     + polynomial_p[2] * (5./64. * q1_over_q2_pow_3 - 13./48. * q0_over_q2 * q1_over_q2)
+    //     + polynomial_p[3] * (-7./128. * q1_over_q2_pow_4 + 23./96. * q0_over_q2 * q1_over_q2_pow_2 - 2./15. * q0_over_q2_pow_2)
+    //     + polynomial_p[4] * (21./512. * q1_over_q2_pow_5 - 7./32. * q0_over_q2 * q1_over_q2_pow_3 + 113./480. * q0_over_q2_pow_2 * q1_over_q2)
+    //     ,
+    //       polynomial_p[0] * (1./2.)
+    //     + polynomial_p[1] * (1./12. * q1_over_q2)
+    //     + polynomial_p[2] * (-5./96. * q1_over_q2_pow_2 + 1./8. * q0_over_q2)
+    //     + polynomial_p[3] * (7./192. * q1_over_q2_pow_3 - 29./240. * q0_over_q2 * q1_over_q2)
+    //     + polynomial_p[4] * (-7./256. * q1_over_q2_pow_4 + 7./60. * q0_over_q2 * q1_over_q2_pow_2 - 1./16. * q0_over_q2_pow_2)
+    //     ,
+    //       polynomial_p[1] * (1./3.)
+    //     + polynomial_p[2] * (1./24. * q1_over_q2)
+    //     + polynomial_p[3] * (-7./240. * q1_over_q2_pow_2 + 1./15. * q0_over_q2)
+    //     + polynomial_p[4] * (7./320. * q1_over_q2_pow_3 - 17./240. * q0_over_q2 * q1_over_q2)
+    //     ,
+    //       polynomial_p[2] * (1./4.)
+    //     + polynomial_p[3] * (1./40. * q1_over_q2)
+    //     + polynomial_p[4] * (-3./160. * q1_over_q2_pow_2 + 1./24. * q0_over_q2)
+    //     ,
+    //       polynomial_p[3] * (1./5.)
+    //     + polynomial_p[4] * (1./60. * q1_over_q2)
+    //     ,
+    //       polynomial_p[4] * (1./6.)
+    // );
+
+    // var convolved = polynomial_p;
+    // let quotient_degree = 5;
+    // var quotient = array(0.0, 0.0, 0.0, 0.0, 0.0, 0.0);
+    // {
+    //     var degree = quotient_degree;
+    //     quotient[degree] = (
+    //         convolved[degree - 1]
+    //     ) / (f32(degree) + 1.0);
+    //     degree--;
+    //     quotient[degree] = (
+    //         convolved[degree - 1]
+    //         + q1_over_q2 * convolved[degree]
+    //         - (f32(degree) + 1.5) * q1_over_q2 * quotient[degree + 1]
+    //     ) / (f32(degree) + 1.0);
+    //     degree--;
+    //     while (degree > 0) {
+    //         quotient[degree] = (
+    //             convolved[degree - 1]
+    //             + q1_over_q2 * convolved[degree]
+    //             + q0_over_q2 * convolved[degree + 1]
+    //             - (f32(degree) + 1.5) * q1_over_q2 * quotient[degree + 1]
+    //             - (f32(degree) + 2.0) * q0_over_q2 * quotient[degree + 2]
+    //         ) / (f32(degree) + 1.0);
+    //         degree--;
+    //     }
+    //     quotient[degree] = (
+    //         q1_over_q2 * convolved[degree]
+    //         + q0_over_q2 * convolved[degree + 1]
+    //         - (f32(degree) + 1.5) * q1_over_q2 * quotient[degree + 1]
+    //         - (f32(degree) + 2.0) * q0_over_q2 * quotient[degree + 2]
+    //     ) / (f32(degree) + 1.0);
+    // }
+    // let remainder = (
+    //     q0_over_q2 * convolved[0]
+    //     - 0.5 * q1_over_q2 * quotient[0]
+    //     - q0_over_q2 * quotient[1]
+    // ) * polynomial_q[2];
 
     // integrate(1 / sqrt(q)) = (1 / sqrt(q2)) * arsinh((q1 + 2 q2 t) / sqrt(4 q0 q2 - q1^2))
-    let inversesqrt_q2 = select(inverseSqrt(polynomial_q[2]), 0.0, polynomial_q[2] == 0.0);
-    let arsinh_factor = select(inverseSqrt(4.0 * q0_over_q2 - q1_over_q2 * q1_over_q2), 0.0, polynomial_q[2] == 0.0);
+    // let inversesqrt_q2 = select(inverseSqrt(polynomial_q[2]), 0.0, polynomial_q[2] == 0.0);
+    // let arsinh_factor = select(inverseSqrt(4.0 * q0_over_q2 - q1_over_q2 * q1_over_q2), 0.0, polynomial_q[2] == 0.0);
 
     var sign = 1.0;
     for (var i = 0u; i < homotopy.roots.count; i++) {
-        let t = homotopy.roots.values[i];
-        var quotient_value = 0.0;
-        {
-            var degree = quotient_degree;
-            while (degree > 0) {
-                quotient_value += quotient[degree];
-                quotient_value *= t;
-                degree--;
-            }
-            quotient_value += quotient[0];
+        let t = homotopy.roots.values[i] - sigma;
+        var integral_value = 0.0;
+        for (var degree = 4 * PARAM_M; degree > 0; degree--) {
+            integral_value *= t;
+            integral_value += integrated[degree];
         }
-        let sqrt_q_value = sqrt(polynomial_q[0] + (polynomial_q[1] + polynomial_q[2] * t) * t);
-        let inversesqrt_q_value = inversesqrt_q2 * asinh(arsinh_factor * (q1_over_q2 + 2.0 * t));
-        let integral_value = rescaling * (quotient_value * sqrt_q_value + remainder * inversesqrt_q_value);
+        let sqrt_t_squared_plus_delta = sqrt(t * t - delta);
+        integral_value *= sqrt_t_squared_plus_delta * sqrt_t_squared_plus_delta * sqrt_t_squared_plus_delta;
+        integral_value += integrated[0] * (t * sqrt_t_squared_plus_delta - delta * select(asinh(t * inverseSqrt(-delta)), 0.0, delta == 0.0));
+        integral_value *= sqrt_q2;
+        //{
+        //    var degree = 5;
+        //    while (degree > 0) {
+        //        quotient_value += quotient[degree];
+        //        quotient_value *= t;
+        //        degree--;
+        //    }
+        //    quotient_value += quotient[0];
+        //}
+        //let sqrt_q_value = sqrt(polynomial_q[0] + (polynomial_q[1] + polynomial_q[2] * t) * t);
+        //let remainder_integral_value = inversesqrt_q2 * asinh(arsinh_factor * (q1_over_q2 + 2.0 * t));
+        //let integral_value = 1.5 * (quotient_value * sqrt_q_value + remainder * remainder_integral_value);
         result += sign * integral_value;
         sign *= -1.0;
     }
