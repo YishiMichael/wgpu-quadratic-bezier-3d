@@ -306,8 +306,6 @@ fn get_intensity(
     view_position: vec3<f32>,
     radius: f32,
 ) -> f32 {
-    var result = 0.0;
-
     let ray_direction = normalize(view_position);
     let view_position_0_scaled = view_position_0 / radius;
     let view_position_1_scaled = view_position_1 / radius;
@@ -324,14 +322,14 @@ fn get_intensity(
 
     // Calculate the integral of ((2 m + 1)!! / (2 m)!!) (p0 + p1 t + p2 t^2 + p3 t^3 + p4 t^4)^m sqrt(q0 + q1 t + q2 t^2)
     // in interval (0, 1), intersected with intervals where the quartic expression evaluates to positive.
-    let polynomial_p = array(
+    var polynomial_p = array(
         -dot(quadratic_bezier[0], quadratic_bezier[0]) + 1.0,
         -2.0 * dot(quadratic_bezier[0], quadratic_bezier[1]),
         -(dot(quadratic_bezier[1], quadratic_bezier[1]) + 2.0 * dot(quadratic_bezier[0], quadratic_bezier[2])),
         -2.0 * dot(quadratic_bezier[1], quadratic_bezier[2]),
         -dot(quadratic_bezier[2], quadratic_bezier[2]),
     );
-    let polynomial_q = array(
+    var polynomial_q = array(
         dot(linear_bezier[0], linear_bezier[0]),
         2.0 * dot(linear_bezier[0], linear_bezier[1]),
         dot(linear_bezier[1], linear_bezier[1]),
@@ -368,7 +366,7 @@ fn get_intensity(
     var domain_homotopy = PolynomialHomotopy(false, domain_roots);
     homotopy = positive_intersection(&homotopy, &domain_homotopy);
     if (homotopy.roots.count == 0) {
-        return result;
+        return 0.0;
     }
 
     // q0 + q1 t + q2 t^2 = q2 ((t - sigma)^2 - delta)
@@ -381,35 +379,25 @@ fn get_intensity(
     }
 
     var coefficients: array<f32, (4 * PARAM_M + 1)>;
-    coefficients[0] = 1.0;
-    for (var i = 1u; i <= PARAM_M; i++) {
-        for (var degree = 4 * i; degree >= 4; degree--) {
-            coefficients[degree] = (
-                polynomial_p[0] * coefficients[degree]
-                + polynomial_p[1] * coefficients[degree - 1]
-                + polynomial_p[2] * coefficients[degree - 2]
-                + polynomial_p[3] * coefficients[degree - 3]
-                + polynomial_p[4] * coefficients[degree - 4]
-            );
+    {
+        var index_partial_sums: array<u32, (PARAM_M + 1)>;
+        var term_products: array<f32, (PARAM_M + 1)>;
+        term_products[0] = 1.0;
+        var carry = 1u;
+        while (carry != 0) {
+            term_products[carry] = term_products[carry - 1] * polynomial_p[index_partial_sums[carry] - index_partial_sums[carry - 1]];
+            while (carry < PARAM_M) {
+                carry++;
+                index_partial_sums[carry] = index_partial_sums[carry - 1];
+                term_products[carry] = term_products[carry - 1] * polynomial_p[0];
+            }
+            coefficients[index_partial_sums[carry]] += term_products[carry];
+            index_partial_sums[carry]++;
+            while (carry != 0 && index_partial_sums[carry] - index_partial_sums[carry - 1] == 5) {
+                carry--;
+                index_partial_sums[carry]++;
+            }
         }
-        coefficients[3] = (
-            polynomial_p[0] * coefficients[3]
-            + polynomial_p[1] * coefficients[2]
-            + polynomial_p[2] * coefficients[1]
-            + polynomial_p[3] * coefficients[0]
-        );
-        coefficients[2] = (
-            polynomial_p[0] * coefficients[2]
-            + polynomial_p[1] * coefficients[1]
-            + polynomial_p[2] * coefficients[0]
-        );
-        coefficients[1] = (
-            polynomial_p[0] * coefficients[1]
-            + polynomial_p[1] * coefficients[0]
-        );
-        coefficients[0] = (
-            polynomial_p[0] * coefficients[0]
-        );
     }
     for (var i = 0u; i <= 4 * PARAM_M; i++) {
         var coefficient = 0.0;
@@ -430,25 +418,24 @@ fn get_intensity(
         coefficients[i] = coefficient;
     }
 
-    var sign = 1.0;
-    for (var i = 0u; i < homotopy.roots.count; i++) {
-        let t = homotopy.roots.values[i] - sigma;
-        var polynomial_value = 0.0;
-        for (var degree = 4 * PARAM_M; degree > 0; degree--) {
-            polynomial_value *= t;
-            polynomial_value += coefficients[degree];
+    var integral_sum = 0.0;
+    {
+        var sign = 1.0;
+        for (var i = 0u; i < homotopy.roots.count; i++) {
+            let t = homotopy.roots.values[i] - sigma;
+            var polynomial_value = 0.0;
+            for (var degree = 4 * PARAM_M; degree > 0; degree--) {
+                polynomial_value *= t;
+                polynomial_value += coefficients[degree];
+            }
+            let sqrt_t_squared_minus_delta = sqrt(t * t - delta);
+            let integral_value = polynomial_value * sqrt_t_squared_minus_delta * sqrt_t_squared_minus_delta * sqrt_t_squared_minus_delta
+                + coefficients[0] * (t * sqrt_t_squared_minus_delta - select(delta * asinh(t * inverseSqrt(-delta)), 0.0, delta == 0.0));
+            integral_sum += sign * integral_value;
+            sign *= -1.0;
         }
-        let sqrt_t_squared_minus_delta = sqrt(t * t - delta);
-        let integral_value = double_factorial_factor * sqrt_q2 * (
-            polynomial_value * sqrt_t_squared_minus_delta * sqrt_t_squared_minus_delta * sqrt_t_squared_minus_delta
-            + coefficients[0] * (t * sqrt_t_squared_minus_delta - select(delta * asinh(t * inverseSqrt(-delta)), 0.0, delta == 0.0))
-        );
-
-        result += sign * integral_value;
-        sign *= -1.0;
     }
-
-    return result;
+    return double_factorial_factor * sqrt_q2 * integral_sum;
 }
 
 
