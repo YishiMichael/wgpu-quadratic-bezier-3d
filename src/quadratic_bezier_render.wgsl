@@ -375,6 +375,10 @@ fn get_intensity(
     let sigma = -select(polynomial_q[1] / polynomial_q[2], 0.0, polynomial_q[2] == 0.0) / 2.0;
     let delta = -select(polynomial_q[0] / polynomial_q[2], 0.0, polynomial_q[2] == 0.0) + sigma * sigma;
     let sqrt_q2 = select(sqrt(polynomial_q[2]), 0.0, polynomial_q[2] == 0.0);
+    var double_factorial_factor = 1.0;
+    for (var i = 1u; i <= PARAM_M; i++) {
+        double_factorial_factor *= f32(2 * i + 1) / f32(2 * i);
+    }
 
     var coefficients: array<f32, (4 * PARAM_M + 1)>;
     coefficients[0] = 1.0;
@@ -426,22 +430,19 @@ fn get_intensity(
         coefficients[i] = coefficient;
     }
 
-    // integrate(1 / sqrt(q)) = (1 / sqrt(q2)) * arsinh((q1 + 2 q2 t) / sqrt(4 q0 q2 - q1^2))
-    // let inversesqrt_q2 = select(inverseSqrt(polynomial_q[2]), 0.0, polynomial_q[2] == 0.0);
-    // let arsinh_factor = select(inverseSqrt(4.0 * q0_over_q2 - q1_over_q2 * q1_over_q2), 0.0, polynomial_q[2] == 0.0);
-
     var sign = 1.0;
     for (var i = 0u; i < homotopy.roots.count; i++) {
         let t = homotopy.roots.values[i] - sigma;
-        var integral_value = 0.0;
+        var polynomial_value = 0.0;
         for (var degree = 4 * PARAM_M; degree > 0; degree--) {
-            integral_value *= t;
-            integral_value += coefficients[degree];
+            polynomial_value *= t;
+            polynomial_value += coefficients[degree];
         }
-        let sqrt_t_squared_plus_delta = sqrt(t * t - delta);
-        integral_value *= sqrt_t_squared_plus_delta * sqrt_t_squared_plus_delta * sqrt_t_squared_plus_delta;
-        integral_value += coefficients[0] * (t * sqrt_t_squared_plus_delta - delta * select(asinh(t * inverseSqrt(-delta)), 0.0, delta == 0.0));
-        integral_value *= sqrt_q2;
+        let sqrt_t_squared_minus_delta = sqrt(t * t - delta);
+        let integral_value = double_factorial_factor * sqrt_q2 * (
+            polynomial_value * sqrt_t_squared_minus_delta * sqrt_t_squared_minus_delta * sqrt_t_squared_minus_delta
+            + coefficients[0] * (t * sqrt_t_squared_minus_delta - select(delta * asinh(t * inverseSqrt(-delta)), 0.0, delta == 0.0))
+        );
 
         result += sign * integral_value;
         sign *= -1.0;
