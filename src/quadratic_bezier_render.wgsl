@@ -62,18 +62,6 @@ fn vs_main(
 }
 
 
-const LINEAR_BEZIER_COEFFICIENTS = mat2x2(
-     1.0,  0.0,
-    -1.0,  1.0,
-);
-const QUADRATIC_BEZIER_COEFFICIENTS = mat3x3(
-     1.0,  0.0,  0.0,
-    -2.0,  2.0,  0.0,
-     1.0, -2.0,  1.0,
-);
-const PARAM_M = 1u;
-
-
 struct SmallVec {
     count: u32,
     values: array<f32, 4>,
@@ -314,49 +302,57 @@ fn get_intensity(
         dot(view_position_0_scaled, ray_direction) * ray_direction - view_position_0_scaled,
         dot(view_position_1_scaled, ray_direction) * ray_direction - view_position_1_scaled,
         dot(view_position_2_scaled, ray_direction) * ray_direction - view_position_2_scaled,
-    ) * QUADRATIC_BEZIER_COEFFICIENTS;
+    ) * mat3x3(
+         1.0,  0.0,  0.0,
+        -2.0,  2.0,  0.0,
+         1.0, -2.0,  1.0,
+    );
     let linear_bezier = mat2x3(
         view_position_1_scaled - view_position_0_scaled,
         view_position_2_scaled - view_position_1_scaled,
-    ) * LINEAR_BEZIER_COEFFICIENTS;
+    ) * mat2x2(
+         1.0,  0.0,
+        -1.0,  1.0,
+    );
 
-    // Calculate the integral of ((2 m + 1)!! / (2 m)!!) (p0 + p1 t + p2 t^2 + p3 t^3 + p4 t^4)^m sqrt(q0 + q1 t + q2 t^2)
+    // Calculate the integral of 3/2 quartic(t) sqrt(q0 + q1 t + q2 t^2)
     // in interval (0, 1), intersected with intervals where the quartic expression evaluates to positive.
-    var polynomial_p = array(
+    var coefficients = array(
         -dot(quadratic_bezier[0], quadratic_bezier[0]) + 1.0,
         -2.0 * dot(quadratic_bezier[0], quadratic_bezier[1]),
         -(dot(quadratic_bezier[1], quadratic_bezier[1]) + 2.0 * dot(quadratic_bezier[0], quadratic_bezier[2])),
         -2.0 * dot(quadratic_bezier[1], quadratic_bezier[2]),
         -dot(quadratic_bezier[2], quadratic_bezier[2]),
     );
-    var polynomial_q = array(
-        dot(linear_bezier[0], linear_bezier[0]),
-        2.0 * dot(linear_bezier[0], linear_bezier[1]),
-        dot(linear_bezier[1], linear_bezier[1]),
-    );
+    let q0 = dot(linear_bezier[0], linear_bezier[0]);
+    let q1 = 2.0 * dot(linear_bezier[0], linear_bezier[1]);
+    let q2 = dot(linear_bezier[1], linear_bezier[1]);
 
     var leading_coefficient = 0.0;
     var roots = SmallVec();
     // This quartic expression will be one of:
-    if (polynomial_p[4] != 0.0) {
+    if (abs(coefficients[4]) >= 1e-5) {
         // - a quartic polynomial with a negative leading coefficient (#roots: 0 / 2 / 4),
-        leading_coefficient = polynomial_p[4];
+        leading_coefficient = coefficients[4];
         roots = solve_monic_quartic(
-            polynomial_p[0] / leading_coefficient,
-            polynomial_p[1] / leading_coefficient,
-            polynomial_p[2] / leading_coefficient,
-            polynomial_p[3] / leading_coefficient,
+            coefficients[0] / leading_coefficient,
+            coefficients[1] / leading_coefficient,
+            coefficients[2] / leading_coefficient,
+            coefficients[3] / leading_coefficient,
         );
-    } else if (polynomial_p[2] != 0.0) {
+        // return 0.0;
+    } else if (abs(coefficients[2]) >= 1e-5) {
         // - a quadratic polynomial with a negative leading coefficient (#roots: 0 / 2),
-        leading_coefficient = polynomial_p[2];
+        leading_coefficient = coefficients[2];
         roots = solve_monic_quadratic(
-            polynomial_p[0] / leading_coefficient,
-            polynomial_p[1] / leading_coefficient,
+            coefficients[0] / leading_coefficient,
+            coefficients[1] / leading_coefficient,
         );
+        // return 0.5;
     } else {
         // - a constant polynomial (#roots: 0).
-        leading_coefficient = polynomial_p[0];
+        leading_coefficient = coefficients[0];
+        // return 0.0;
     }
     insertion_sort_descending(&roots);
     var homotopy = PolynomialHomotopy(leading_coefficient > 0.0, roots);
@@ -370,48 +366,23 @@ fn get_intensity(
     }
 
     // q0 + q1 t + q2 t^2 = q2 ((t - sigma)^2 - delta)
-    let sigma = -select(polynomial_q[1] / polynomial_q[2], 0.0, polynomial_q[2] == 0.0) / 2.0;
-    let delta = -select(polynomial_q[0] / polynomial_q[2], 0.0, polynomial_q[2] == 0.0) + sigma * sigma;
-    let sqrt_q2 = select(sqrt(polynomial_q[2]), 0.0, polynomial_q[2] == 0.0);
-    var double_factorial_factor = 1.0;
-    for (var i = 1u; i <= PARAM_M; i++) {
-        double_factorial_factor *= f32(2 * i + 1) / f32(2 * i);
-    }
+    let sigma = -select(q1 / q2, 0.0, q2 == 0.0) / 2.0;
+    let delta = -select(q0 / q2, 0.0, q2 == 0.0) + sigma * sigma;
+    let sqrt_q2 = select(sqrt(q2), 0.0, q2 == 0.0);
 
-    var coefficients: array<f32, (4 * PARAM_M + 1)>;
-    {
-        var index_partial_sums: array<u32, (PARAM_M + 1)>;
-        var term_products: array<f32, (PARAM_M + 1)>;
-        term_products[0] = 1.0;
-        var carry = 1u;
-        while (carry != 0) {
-            term_products[carry] = term_products[carry - 1] * polynomial_p[index_partial_sums[carry] - index_partial_sums[carry - 1]];
-            while (carry < PARAM_M) {
-                carry++;
-                index_partial_sums[carry] = index_partial_sums[carry - 1];
-                term_products[carry] = term_products[carry - 1] * polynomial_p[0];
-            }
-            coefficients[index_partial_sums[carry]] += term_products[carry];
-            index_partial_sums[carry]++;
-            while (carry != 0 && index_partial_sums[carry] - index_partial_sums[carry - 1] == 5) {
-                carry--;
-                index_partial_sums[carry]++;
-            }
-        }
-    }
-    for (var i = 0u; i <= 4 * PARAM_M; i++) {
+    for (var i = 0u; i <= 4; i++) {
         var coefficient = 0.0;
         var coefficient_factor = 1.0;
-        for (var j = i; j <= 4 * PARAM_M; j++) {
+        for (var j = i; j <= 4; j++) {
             coefficient += coefficient_factor * coefficients[j];
             coefficient_factor *= f32(j + 1) / f32(j - i + 1) * sigma;
         }
         coefficients[i] = coefficient;
     }
-    for (var i = 0u; i <= 4 * PARAM_M; i++) {
+    for (var i = 0u; i <= 4; i++) {
         var coefficient = 0.0;
         var coefficient_factor = 1.0 / f32(i + 2);
-        for (var j = i; j <= 4 * PARAM_M; j += 2u) {
+        for (var j = i; j <= 4; j += 2u) {
             coefficient += coefficient_factor * coefficients[j];
             coefficient_factor *= f32(j + 1) / f32(j + 4) * delta;
         }
@@ -424,7 +395,7 @@ fn get_intensity(
         for (var i = 0u; i < homotopy.roots.count; i++) {
             let t = homotopy.roots.values[i] - sigma;
             var polynomial_value = 0.0;
-            for (var degree = 4 * PARAM_M; degree > 0; degree--) {
+            for (var degree = 4; degree > 0; degree--) {
                 polynomial_value *= t;
                 polynomial_value += coefficients[degree];
             }
@@ -435,7 +406,7 @@ fn get_intensity(
             sign *= -1.0;
         }
     }
-    return double_factorial_factor * sqrt_q2 * integral_sum;
+    return (3.0 / 2.0) * sqrt_q2 * integral_sum;
 }
 
 
