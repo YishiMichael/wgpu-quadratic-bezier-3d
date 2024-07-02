@@ -90,10 +90,10 @@ fn append(
 }
 
 fn insertion_sort_descending(
-    roots_ptr: ptr<function, SmallVec>,
+    vec_ptr: ptr<function, SmallVec>,
 ) {
-    let count = (*roots_ptr).count;
-    let values_ptr = &(*roots_ptr).values;
+    let count = (*vec_ptr).count;
+    let values_ptr = &(*vec_ptr).values;
     for (var i = 1u; i < count; i++) {
         var j = i;
         let value = (*values_ptr)[j];
@@ -365,32 +365,32 @@ fn get_intensity(
         return 0.0;
     }
 
-    // q0 + q1 t + q2 t^2 = q2 ((t - sigma)^2 - delta)
-    let sigma = -select(q1 / q2, 0.0, q2 == 0.0) / 2.0;
-    let delta = -select(q0 / q2, 0.0, q2 == 0.0) + sigma * sigma;
-    let sqrt_q2 = select(sqrt(q2), 0.0, q2 == 0.0);
-
-    for (var i = 0u; i <= 4; i++) {
-        var coefficient = 0.0;
-        var coefficient_factor = 1.0;
-        for (var j = i; j <= 4; j++) {
-            coefficient += coefficient_factor * coefficients[j];
-            coefficient_factor *= f32(j + 1) / f32(j - i + 1) * sigma;
-        }
-        coefficients[i] = coefficient;
-    }
-    for (var i = 0u; i <= 4; i++) {
-        var coefficient = 0.0;
-        var coefficient_factor = 1.0 / f32(i + 2);
-        for (var j = i; j <= 4; j += 2u) {
-            coefficient += coefficient_factor * coefficients[j];
-            coefficient_factor *= f32(j + 1) / f32(j + 4) * delta;
-        }
-        coefficients[i] = coefficient;
-    }
-
     var integral_sum = 0.0;
-    {
+    if (abs(q2) >= 1e-3) {
+        // q0 + q1 t + q2 t^2 = q2 ((t - sigma)^2 - delta)
+        let sigma = -select(q1 / q2, 0.0, abs(q2) < 1e-3) / 2.0;
+        let delta = -select(q0 / q2, 0.0, abs(q2) < 1e-3) + sigma * sigma;
+        let sqrt_q2 = select(sqrt(q2), 0.0, abs(q2) < 1e-3);
+
+        for (var i = 0u; i <= 4; i++) {
+            var coefficient = 0.0;
+            var coefficient_factor = 1.0;
+            for (var j = i; j <= 4; j++) {
+                coefficient += coefficient_factor * coefficients[j];
+                coefficient_factor *= f32(j + 1) / f32(j - i + 1) * sigma;
+            }
+            coefficients[i] = coefficient;
+        }
+        for (var i = 0u; i <= 4; i++) {
+            var coefficient = 0.0;
+            var coefficient_factor = 1.0 / f32(i + 2);
+            for (var j = i; j <= 4; j += 2u) {
+                coefficient += coefficient_factor * coefficients[j];
+                coefficient_factor *= f32(j + 1) / f32(j + 4) * delta;
+            }
+            coefficients[i] = coefficient;
+        }
+
         var sign = 1.0;
         for (var i = 0u; i < homotopy.roots.count; i++) {
             let t = homotopy.roots.values[i] - sigma;
@@ -400,13 +400,35 @@ fn get_intensity(
                 polynomial_value += coefficients[degree];
             }
             let sqrt_t_squared_minus_delta = sqrt(t * t - delta);
-            let integral_value = polynomial_value * sqrt_t_squared_minus_delta * sqrt_t_squared_minus_delta * sqrt_t_squared_minus_delta
-                + coefficients[0] * (t * sqrt_t_squared_minus_delta - select(delta * asinh(t * inverseSqrt(-delta)), 0.0, delta == 0.0));
+            let integral_value = sqrt_q2 * (
+                polynomial_value * sqrt_t_squared_minus_delta * sqrt_t_squared_minus_delta * sqrt_t_squared_minus_delta
+                + coefficients[0] * (t * sqrt_t_squared_minus_delta - select(delta * asinh(t * inverseSqrt(-delta)), 0.0, abs(delta) < 1e-5))
+            );
+            integral_sum += sign * integral_value;
+            sign *= -1.0;
+        }
+    } else if (abs(q0) >= 1e-3) {
+        let sqrt_q0 = sqrt(q0);
+
+        for (var i = 0u; i <= 4; i++) {
+            coefficients[i] /= f32(i + 1);
+        }
+
+        var sign = 1.0;
+        for (var i = 0u; i < homotopy.roots.count; i++) {
+            let t = homotopy.roots.values[i];
+            var polynomial_value = 0.0;
+            for (var degree = 4; degree > 0; degree--) {
+                polynomial_value *= t;
+                polynomial_value += coefficients[degree];
+            }
+            let integral_value = sqrt_q0 * (polynomial_value * t * t + coefficients[0] * t);
             integral_sum += sign * integral_value;
             sign *= -1.0;
         }
     }
-    return (3.0 / 2.0) * sqrt_q2 * integral_sum;
+
+    return (3.0 / 2.0) * integral_sum;
 }
 
 

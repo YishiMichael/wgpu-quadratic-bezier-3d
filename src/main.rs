@@ -68,7 +68,7 @@ impl<'window> State<'window> {
             QuadraticBezier {
                 position_0: [0.0, 0.0, 0.0].into(),
                 position_1: [1.0, 0.0, 0.0].into(),
-                position_2: [2.5, 0.00001, 0.0].into(),
+                position_2: [2.001, 0.0, 0.0].into(),
             },
             QuadraticBezier {
                 position_0: [0.0, 0.0, 0.0].into(),
