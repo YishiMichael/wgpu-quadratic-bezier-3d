@@ -331,7 +331,7 @@ fn get_intensity(
     var leading_coefficient = 0.0;
     var roots = SmallVec();
     // This quartic expression will be one of:
-    if (abs(coefficients[4]) >= 5e-3) {
+    if (abs(coefficients[4]) >= 1e-4) {
         // - a quartic polynomial with a negative leading coefficient (#roots: 0 / 2 / 4),
         leading_coefficient = coefficients[4];
         roots = solve_monic_quartic(
@@ -340,7 +340,7 @@ fn get_intensity(
             coefficients[2] / leading_coefficient,
             coefficients[3] / leading_coefficient,
         );
-    } else if (abs(coefficients[2]) >= 5e-3) {
+    } else if (abs(coefficients[2]) >= 1e-4) {
         // - a quadratic polynomial with a negative leading coefficient (#roots: 0 / 2),
         leading_coefficient = coefficients[2];
         roots = solve_monic_quadratic(
@@ -363,7 +363,7 @@ fn get_intensity(
     }
 
     var integral_sum = 0.0;
-    if (q2 >= 5e-2) {
+    if (q2 >= 1e-4) {
         // q0 + q1 t + q2 t^2 = q2 ((t - sigma)^2 - delta)
         let sigma = -q1 / (2.0 * q2);
         let delta = -q0 / q2 + sigma * sigma;
@@ -396,15 +396,15 @@ fn get_intensity(
                 polynomial_value *= t;
                 polynomial_value += coefficients[degree];
             }
-            let sqrt_t_squared_minus_delta = select(sqrt(t * t - delta), abs(t), abs(delta) < 5e-3);
+            let sqrt_t_squared_minus_delta = select(sqrt(t * t - delta), abs(t), abs(delta) < 1e-4);
             let integral_value = sqrt_q2 * (
                 polynomial_value * sqrt_t_squared_minus_delta * sqrt_t_squared_minus_delta * sqrt_t_squared_minus_delta
-                + coefficients[0] * (t * sqrt_t_squared_minus_delta - select(delta * asinh(t * inverseSqrt(-delta)), 0.0, abs(delta) < 5e-3))
+                + coefficients[0] * (t * sqrt_t_squared_minus_delta - select(delta * asinh(t * inverseSqrt(-delta)), 0.0, abs(delta) < 1e-4))
             );
             integral_sum += sign * integral_value;
             sign *= -1.0;
         }
-    } else if (q0 >= 5e-2) {
+    } else if (q0 >= 1e-4) {
         let sqrt_q0 = sqrt(q0);
 
         for (var i = 0u; i <= 4; i++) {
