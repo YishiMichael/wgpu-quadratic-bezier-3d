@@ -23,15 +23,19 @@ fn vs_main(
     in: Vertex,
 ) -> VertexOutput {
     // https://www.saschawillems.de/blog/2016/08/13/vulkan-tutorial-on-rendering-a-fullscreen-quad-without-buffers/
-    // vertex_index -> uv
-    // 0 -> (0, 0)
-    // 1 -> (0, 2)
-    // 2 -> (2, 0)
-    // This triangle covers the screen with uv spanned (0 - 1, 0 - 1).
-    let uv = vec2<f32>(vec2((in.vertex_index << 1) & 2, in.vertex_index & 2));
+    // https://gpuweb.github.io/gpuweb/#coordinate-systems
+    // | vertex_index | uv     | clip_position  |
+    // | ============ | ====== | ============== |
+    // | 0            | (0, 0) | (-1, +1, 0, 1) |
+    // | 1            | (0, 2) | (-1, -3, 0, 1) |
+    // | 2            | (2, 0) | (+3, +1, 0, 1) |
+    // Emits a triangle covering the full screen.
+    // The vertices are arranged in counterclockwise orientation.
+    let u = f32(in.vertex_index & 2);
+    let v = f32((in.vertex_index << 1) & 2);
     return VertexOutput(
-        vec4(uv * 2.0 - 1.0, 0.0, 1.0),
-        uv,
+        vec4(2.0 * u - 1.0, 1.0 - 2.0 * v, 0.0, 1.0),
+        vec2(u, v),
     );
 }
 
@@ -40,8 +44,6 @@ fn vs_main(
 fn fs_main(
     in: VertexOutput,
 ) -> @location(0) vec4<f32> {
-    let texture_size = vec2<f32>(textureDimensions(t_intensity));
-    let texture_coords = vec2<u32>(vec2(in.uv.x * texture_size.x, (1.0 - in.uv.y) * texture_size.y));
-    let intensity = textureLoad(t_intensity, texture_coords, 0).r;
+    let intensity = textureLoad(t_intensity, vec2<u32>(in.uv * vec2<f32>(textureDimensions(t_intensity))), 0).r;
     return clamp(intensity, 0.0, 1.0) * u_style.opacity * vec4(u_style.color, 1.0);
 }
