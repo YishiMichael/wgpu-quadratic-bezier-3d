@@ -51,7 +51,7 @@ struct State<'window> {
     queue: wgpu::Queue,
     bounding_geometry_pipeline: wgpu::ComputePipeline,
     intensity_pipeline: wgpu::RenderPipeline,
-    rendering_pipeline: wgpu::RenderPipeline,
+    frame_pipeline: wgpu::RenderPipeline,
     camera_uniform_buffer: wgpu::Buffer,
     model_uniform_buffer: wgpu::Buffer,
     style_uniform_buffer: wgpu::Buffer,
@@ -353,10 +353,10 @@ impl<'window> State<'window> {
                 multiview: None,
             })
         };
-        let rendering_pipeline = {
+        let frame_pipeline = {
             let shader_module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
                 label: None,
-                source: wgpu::ShaderSource::Wgsl(Cow::Borrowed(include_str!("quadratic_bezier_rendering.wgsl"))),
+                source: wgpu::ShaderSource::Wgsl(Cow::Borrowed(include_str!("quadratic_bezier_frame.wgsl"))),
             });
             let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                 label: None,
@@ -514,7 +514,7 @@ impl<'window> State<'window> {
             queue,
             bounding_geometry_pipeline,
             intensity_pipeline,
-            rendering_pipeline,
+            frame_pipeline,
             camera_uniform_buffer,
             model_uniform_buffer,
             style_uniform_buffer,
@@ -601,7 +601,7 @@ impl<'window> State<'window> {
 
         {
             let view = frame.texture.create_view(&wgpu::TextureViewDescriptor::default());
-            let mut rendering_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            let mut frame_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: None,
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                     view: &view,
@@ -615,11 +615,11 @@ impl<'window> State<'window> {
                 timestamp_writes: None,
                 occlusion_query_set: None,
             });
-            rendering_pass.set_pipeline(&self.rendering_pipeline);
-            rendering_pass.set_bind_group(0, &self.uniform_bind_group, &[]);
-            rendering_pass.set_bind_group(1, &self.texture_bind_group, &[]);
-            rendering_pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
-            rendering_pass.draw(0..3, 0..1);
+            frame_pass.set_pipeline(&self.frame_pipeline);
+            frame_pass.set_bind_group(0, &self.uniform_bind_group, &[]);
+            frame_pass.set_bind_group(1, &self.texture_bind_group, &[]);
+            frame_pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
+            frame_pass.draw(0..3, 0..1);
         }
 
         self.queue.submit(Some(encoder.finish()));
