@@ -50,15 +50,18 @@ struct State<'window> {
     device: wgpu::Device,
     queue: wgpu::Queue,
     bounding_geometry_pipeline: wgpu::ComputePipeline,
-    render_pipeline: wgpu::RenderPipeline,
+    intensity_pipeline: wgpu::RenderPipeline,
+    rendering_pipeline: wgpu::RenderPipeline,
     camera_uniform_buffer: wgpu::Buffer,
     model_uniform_buffer: wgpu::Buffer,
     style_uniform_buffer: wgpu::Buffer,
     quadratic_bezier_buffer: wgpu::Buffer,
     vertex_buffer: wgpu::Buffer,
     index_buffer: wgpu::Buffer,
+    intensity_texture: wgpu::Texture,
     uniform_bind_group: wgpu::BindGroup,
     storage_bind_group: wgpu::BindGroup,
+    texture_bind_group: wgpu::BindGroup,
     initial_timestamp: std::time::Instant,
 }
 
@@ -68,7 +71,7 @@ impl<'window> State<'window> {
             QuadraticBezier {
                 position_0: [0.0, 0.0, 0.0].into(),
                 position_1: [1.0, 0.0, 0.0].into(),
-                position_2: [2.008, 0.0, 0.0].into(),
+                position_2: [2.0, 1.0, 0.0].into(),
             },
             QuadraticBezier {
                 position_0: [0.0, 0.0, 0.0].into(),
@@ -102,7 +105,7 @@ impl<'window> State<'window> {
             .request_device(
                 &wgpu::DeviceDescriptor {
                     label: None,
-                    required_features: wgpu::Features::BUFFER_BINDING_ARRAY | wgpu::Features::STORAGE_RESOURCE_BINDING_ARRAY,
+                    required_features: wgpu::Features::BUFFER_BINDING_ARRAY | wgpu::Features::STORAGE_RESOURCE_BINDING_ARRAY | wgpu::Features::TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES,
                     // Make sure we use the texture resolution limits from the adapter, so we can support images the size of the swapchain.
                     required_limits: wgpu::Limits::default(),
                 },
@@ -111,6 +114,7 @@ impl<'window> State<'window> {
             .await
             .unwrap();
 
+        let window_size = window.inner_size();
         let config = {
             let surface_capabilities = surface.get_capabilities(&adapter);
             // Shader code in this tutorial assumes an Srgb surface texture. Using a different
@@ -122,12 +126,11 @@ impl<'window> State<'window> {
                 .copied()
                 .find(|f| f.is_srgb())
                 .unwrap_or(surface_capabilities.formats[0]);
-            let size = window.inner_size();
             wgpu::SurfaceConfiguration {
                 usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
                 format: surface_format,
-                width: size.width,
-                height: size.height,
+                width: window_size.width,
+                height: window_size.height,
                 present_mode: surface_capabilities.present_modes[0],
                 alpha_mode: surface_capabilities.alpha_modes[0],
                 view_formats: vec![],
@@ -217,6 +220,25 @@ impl<'window> State<'window> {
                 },
             ],
         });
+        let texture_bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: None,
+            entries: &[
+                // var t_intensity: texture_2d<f32>;
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        multisampled: false,
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        sample_type: wgpu::TextureSampleType::Float {
+                            filterable: false
+                        },
+                    },
+                    count: None,
+                },
+            ],
+        });
+
         let bounding_geometry_pipeline = {
             let shader_module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
                 label: None,
@@ -238,10 +260,10 @@ impl<'window> State<'window> {
                 compilation_options: Default::default(),
             })
         };
-        let render_pipeline = {
+        let intensity_pipeline = {
             let shader_module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
                 label: None,
-                source: wgpu::ShaderSource::Wgsl(Cow::Borrowed(include_str!("quadratic_bezier_render.wgsl"))),
+                source: wgpu::ShaderSource::Wgsl(Cow::Borrowed(include_str!("quadratic_bezier_intensity.wgsl"))),
             });
             let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                 label: None,
@@ -292,7 +314,7 @@ impl<'window> State<'window> {
                     compilation_options: Default::default(),
                     targets: &[
                         Some(wgpu::ColorTargetState {
-                            format: config.format,
+                            format: wgpu::TextureFormat::R32Float,//config.format,
                             blend: Some(wgpu::BlendState {
                                 color: wgpu::BlendComponent {
                                     src_factor: wgpu::BlendFactor::One,
@@ -320,6 +342,58 @@ impl<'window> State<'window> {
                     // Requires Features::DEPTH_CLIP_CONTROL
                     unclipped_depth: false,
                     // Requires Features::CONSERVATIVE_RASTERIZATION
+                    conservative: false,
+                },
+                depth_stencil: None,
+                multisample: wgpu::MultisampleState {
+                    count: 1,
+                    mask: !0,
+                    alpha_to_coverage_enabled: false,
+                },
+                multiview: None,
+            })
+        };
+        let rendering_pipeline = {
+            let shader_module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+                label: None,
+                source: wgpu::ShaderSource::Wgsl(Cow::Borrowed(include_str!("quadratic_bezier_rendering.wgsl"))),
+            });
+            let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: None,
+                bind_group_layouts: &[
+                    &uniform_bind_group_layout,
+                    &texture_bind_group_layout,
+                ],
+                push_constant_ranges: &[],
+            });
+            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: None,
+                layout: Some(&pipeline_layout),
+                vertex: wgpu::VertexState {
+                    module: &shader_module,
+                    entry_point: "vs_main",
+                    compilation_options: Default::default(),
+                    buffers: &[],
+                },
+                fragment: Some(wgpu::FragmentState {
+                    module: &shader_module,
+                    entry_point: "fs_main",
+                    compilation_options: Default::default(),
+                    targets: &[
+                        Some(wgpu::ColorTargetState {
+                            format: config.format,
+                            blend: None,
+                            write_mask: wgpu::ColorWrites::ALL,
+                        })
+                    ],
+                }),
+                primitive: wgpu::PrimitiveState {
+                    topology: wgpu::PrimitiveTopology::TriangleStrip,
+                    strip_index_format: None,
+                    front_face: wgpu::FrontFace::Ccw,
+                    cull_mode: None,
+                    polygon_mode: wgpu::PolygonMode::Fill,
+                    unclipped_depth: false,
                     conservative: false,
                 },
                 depth_stencil: None,
@@ -368,6 +442,20 @@ impl<'window> State<'window> {
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::INDEX,
             mapped_at_creation: false,
         });
+        let intensity_texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: None,
+            size: wgpu::Extent3d {
+                width: window_size.width,
+                height: window_size.height,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::R32Float,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST | wgpu::TextureUsages::RENDER_ATTACHMENT,
+            view_formats: &[],
+        });
         let uniform_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: None,
             layout: &uniform_bind_group_layout,
@@ -404,6 +492,16 @@ impl<'window> State<'window> {
                 },
             ],
         });
+        let texture_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: None,
+            layout: &texture_bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(&intensity_texture.create_view(&wgpu::TextureViewDescriptor::default())),
+                },
+            ],
+        });
 
         let initial_timestamp = std::time::Instant::now();
 
@@ -415,22 +513,25 @@ impl<'window> State<'window> {
             device,
             queue,
             bounding_geometry_pipeline,
-            render_pipeline,
+            intensity_pipeline,
+            rendering_pipeline,
             camera_uniform_buffer,
             model_uniform_buffer,
             style_uniform_buffer,
             quadratic_bezier_buffer,
             vertex_buffer,
             index_buffer,
+            intensity_texture,
             uniform_bind_group,
             storage_bind_group,
+            texture_bind_group,
             initial_timestamp,
         }
     }
 
     fn render(&mut self) {
-        let seconds = self.initial_timestamp.elapsed().as_secs_f32();
         {
+            let seconds = self.initial_timestamp.elapsed().as_secs_f32();
             let aspect_ratio = self.config.width as f32 / self.config.height as f32;
             let camera_uniform = CameraUniform {
                 projection_matrix: glam::Mat4::perspective_rh(std::f32::consts::FRAC_PI_2, aspect_ratio, 0.1, 100.0).into(),
@@ -447,22 +548,23 @@ impl<'window> State<'window> {
             // TODO
             let mut camera_uniform_cpu_buffer = encase::UniformBuffer::new(Vec::<u8>::new());
             camera_uniform_cpu_buffer.write(&camera_uniform).unwrap();
-            self.queue.write_buffer(&self.camera_uniform_buffer, 0, camera_uniform_cpu_buffer.into_inner().as_slice());
+            self.queue.write_buffer(&self.camera_uniform_buffer, 0, camera_uniform_cpu_buffer.as_ref());
             let mut model_uniform_cpu_buffer = encase::UniformBuffer::new(Vec::<u8>::new());
             model_uniform_cpu_buffer.write(&model_uniform).unwrap();
-            self.queue.write_buffer(&self.model_uniform_buffer, 0, model_uniform_cpu_buffer.into_inner().as_slice());
+            self.queue.write_buffer(&self.model_uniform_buffer, 0, model_uniform_cpu_buffer.as_ref());
             let mut style_uniform_cpu_buffer = encase::UniformBuffer::new(Vec::<u8>::new());
             style_uniform_cpu_buffer.write(&style_uniform).unwrap();
-            self.queue.write_buffer(&self.style_uniform_buffer, 0, style_uniform_cpu_buffer.into_inner().as_slice());
+            self.queue.write_buffer(&self.style_uniform_buffer, 0, style_uniform_cpu_buffer.as_ref());
             let mut quadratic_bezier_cpu_buffer = encase::StorageBuffer::new(Vec::<u8>::new());
             quadratic_bezier_cpu_buffer.write(&self.curve_data).unwrap();
-            self.queue.write_buffer(&self.quadratic_bezier_buffer, 0, quadratic_bezier_cpu_buffer.into_inner().as_slice());
+            self.queue.write_buffer(&self.quadratic_bezier_buffer, 0, quadratic_bezier_cpu_buffer.as_ref());
         }
 
         let frame = self.surface.get_current_texture().unwrap();
         let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
             label: None,
         });
+
         {
             let mut bounding_geometry_pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
                 label: None,
@@ -475,8 +577,8 @@ impl<'window> State<'window> {
         }
 
         {
-            let view = frame.texture.create_view(&wgpu::TextureViewDescriptor::default());
-            let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            let view = self.intensity_texture.create_view(&wgpu::TextureViewDescriptor::default());
+            let mut intensity_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: None,
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                     view: &view,
@@ -490,11 +592,34 @@ impl<'window> State<'window> {
                 timestamp_writes: None,
                 occlusion_query_set: None,
             });
-            render_pass.set_pipeline(&self.render_pipeline);
-            render_pass.set_bind_group(0, &self.uniform_bind_group, &[]);
-            render_pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
-            render_pass.set_index_buffer(self.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
-            render_pass.draw_indexed(0..(20 * self.curve_data.len() as u32), 0, 0..1);
+            intensity_pass.set_pipeline(&self.intensity_pipeline);
+            intensity_pass.set_bind_group(0, &self.uniform_bind_group, &[]);
+            intensity_pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
+            intensity_pass.set_index_buffer(self.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
+            intensity_pass.draw_indexed(0..(20 * self.curve_data.len() as u32), 0, 0..1);
+        }
+
+        {
+            let view = frame.texture.create_view(&wgpu::TextureViewDescriptor::default());
+            let mut rendering_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: None,
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &view,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+            });
+            rendering_pass.set_pipeline(&self.rendering_pipeline);
+            rendering_pass.set_bind_group(0, &self.uniform_bind_group, &[]);
+            rendering_pass.set_bind_group(1, &self.texture_bind_group, &[]);
+            rendering_pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
+            rendering_pass.draw(0..3, 0..1);
         }
 
         self.queue.submit(Some(encoder.finish()));

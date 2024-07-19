@@ -432,13 +432,12 @@ fn get_intensity(
 @fragment
 fn fs_main(
     in: VertexOutput,
-) -> @location(0) vec4<f32> {
-    var intensity = get_intensity(
+) -> @location(0) f32 {
+    return get_intensity(
         in.view_position_0,
         in.view_position_1,
         in.view_position_2,
         in.view_position,
         u_style.thickness / 2.0,
     );
-    return intensity * u_style.opacity * vec4(u_style.color, 1.0);
 }
