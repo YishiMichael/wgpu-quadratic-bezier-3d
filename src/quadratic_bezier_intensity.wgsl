@@ -359,7 +359,7 @@ fn get_intensity(
     var domain_homotopy = PolynomialHomotopy(false, domain_roots);
     homotopy = positive_intersection(&homotopy, &domain_homotopy);
     if (homotopy.roots.count == 0) {
-        return 0.0;
+        discard;
     }
 
     var integral_sum = 0.0;

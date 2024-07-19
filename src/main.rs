@@ -59,6 +59,7 @@ struct State<'window> {
     vertex_buffer: wgpu::Buffer,
     index_buffer: wgpu::Buffer,
     intensity_texture: wgpu::Texture,
+    stencil_texture: wgpu::Texture,
     uniform_bind_group: wgpu::BindGroup,
     storage_bind_group: wgpu::BindGroup,
     texture_bind_group: wgpu::BindGroup,
@@ -314,7 +315,7 @@ impl<'window> State<'window> {
                     compilation_options: Default::default(),
                     targets: &[
                         Some(wgpu::ColorTargetState {
-                            format: wgpu::TextureFormat::R32Float,//config.format,
+                            format: wgpu::TextureFormat::R32Float,
                             blend: Some(wgpu::BlendState {
                                 color: wgpu::BlendComponent {
                                     src_factor: wgpu::BlendFactor::One,
@@ -344,7 +345,23 @@ impl<'window> State<'window> {
                     // Requires Features::CONSERVATIVE_RASTERIZATION
                     conservative: false,
                 },
-                depth_stencil: None,
+                depth_stencil: Some(wgpu::DepthStencilState {
+                    format: wgpu::TextureFormat::Stencil8,
+                    depth_write_enabled: false,
+                    depth_compare: wgpu::CompareFunction::Always,
+                    stencil: wgpu::StencilState {
+                        front: wgpu::StencilFaceState {
+                            compare: wgpu::CompareFunction::Always,
+                            fail_op: wgpu::StencilOperation::Keep,
+                            depth_fail_op: wgpu::StencilOperation::Keep,
+                            pass_op: wgpu::StencilOperation::Replace,
+                        },
+                        back: wgpu::StencilFaceState::IGNORE,
+                        read_mask: !0,
+                        write_mask: !0,
+                    },
+                    bias: Default::default(),
+                }),
                 multisample: wgpu::MultisampleState {
                     count: 1,
                     mask: !0,
@@ -396,7 +413,23 @@ impl<'window> State<'window> {
                     unclipped_depth: false,
                     conservative: false,
                 },
-                depth_stencil: None,
+                depth_stencil: Some(wgpu::DepthStencilState {
+                    format: wgpu::TextureFormat::Stencil8,
+                    depth_write_enabled: false,
+                    depth_compare: wgpu::CompareFunction::Always,
+                    stencil: wgpu::StencilState {
+                        front: wgpu::StencilFaceState {
+                            compare: wgpu::CompareFunction::Equal,
+                            fail_op: wgpu::StencilOperation::Keep,
+                            depth_fail_op: wgpu::StencilOperation::Keep,
+                            pass_op: wgpu::StencilOperation::Keep,
+                        },
+                        back: wgpu::StencilFaceState::IGNORE,
+                        read_mask: !0,
+                        write_mask: !0,
+                    },
+                    bias: Default::default(),
+                }),
                 multisample: wgpu::MultisampleState {
                     count: 1,
                     mask: !0,
@@ -454,6 +487,20 @@ impl<'window> State<'window> {
             dimension: wgpu::TextureDimension::D2,
             format: wgpu::TextureFormat::R32Float,
             usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST | wgpu::TextureUsages::RENDER_ATTACHMENT,
+            view_formats: &[],
+        });
+        let stencil_texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: None,
+            size: wgpu::Extent3d {
+                width: window_size.width,
+                height: window_size.height,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Stencil8,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
             view_formats: &[],
         });
         let uniform_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -522,6 +569,7 @@ impl<'window> State<'window> {
             vertex_buffer,
             index_buffer,
             intensity_texture,
+            stencil_texture,
             uniform_bind_group,
             storage_bind_group,
             texture_bind_group,
@@ -560,10 +608,13 @@ impl<'window> State<'window> {
             self.queue.write_buffer(&self.quadratic_bezier_buffer, 0, quadratic_bezier_cpu_buffer.as_ref());
         }
 
-        let frame = self.surface.get_current_texture().unwrap();
         let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
             label: None,
         });
+        let frame = self.surface.get_current_texture().unwrap();
+        let intensity_view = self.intensity_texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let stencil_view = self.stencil_texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let frame_view = frame.texture.create_view(&wgpu::TextureViewDescriptor::default());
 
         {
             let mut bounding_geometry_pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
@@ -577,18 +628,24 @@ impl<'window> State<'window> {
         }
 
         {
-            let view = self.intensity_texture.create_view(&wgpu::TextureViewDescriptor::default());
             let mut intensity_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: None,
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &view,
+                    view: &intensity_view,
                     resolve_target: None,
                     ops: wgpu::Operations {
                         load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
                         store: wgpu::StoreOp::Store,
                     },
                 })],
-                depth_stencil_attachment: None,
+                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                    view: &stencil_view,
+                    depth_ops: None,
+                    stencil_ops: Some(wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(0),
+                        store: wgpu::StoreOp::Store,
+                    }),
+                }),
                 timestamp_writes: None,
                 occlusion_query_set: None,
             });
@@ -596,22 +653,29 @@ impl<'window> State<'window> {
             intensity_pass.set_bind_group(0, &self.uniform_bind_group, &[]);
             intensity_pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
             intensity_pass.set_index_buffer(self.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
+            intensity_pass.set_stencil_reference(1);
             intensity_pass.draw_indexed(0..(20 * self.curve_data.len() as u32), 0, 0..1);
         }
 
         {
-            let view = frame.texture.create_view(&wgpu::TextureViewDescriptor::default());
             let mut frame_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: None,
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &view,
+                    view: &frame_view,
                     resolve_target: None,
                     ops: wgpu::Operations {
                         load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
                         store: wgpu::StoreOp::Store,
                     },
                 })],
-                depth_stencil_attachment: None,
+                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                    view: &stencil_view,
+                    depth_ops: None,
+                    stencil_ops: Some(wgpu::Operations {
+                        load: wgpu::LoadOp::Load,
+                        store: wgpu::StoreOp::Store,
+                    }),
+                }),
                 timestamp_writes: None,
                 occlusion_query_set: None,
             });
@@ -619,6 +683,7 @@ impl<'window> State<'window> {
             frame_pass.set_bind_group(0, &self.uniform_bind_group, &[]);
             frame_pass.set_bind_group(1, &self.texture_bind_group, &[]);
             frame_pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
+            frame_pass.set_stencil_reference(1);
             frame_pass.draw(0..3, 0..1);
         }
 
