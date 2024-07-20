@@ -48,7 +48,6 @@ struct Vertex {
 struct State<'window> {
     window: Arc<winit::window::Window>,
     surface: wgpu::Surface<'window>,
-    config: wgpu::SurfaceConfiguration,
     device: wgpu::Device,
     queue: wgpu::Queue,
     bounding_geometry_pipeline: wgpu::ComputePipeline,
@@ -112,7 +111,7 @@ impl<'window> State<'window> {
                 .formats
                 .iter()
                 .copied()
-                .find(|f| f.is_srgb())
+                .find(|format| format.is_srgb())
                 .unwrap_or(surface_capabilities.formats[0]);
             wgpu::SurfaceConfiguration {
                 usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
@@ -125,6 +124,7 @@ impl<'window> State<'window> {
                 desired_maximum_frame_latency: 2,
             }
         };
+        surface.configure(&device, &config);
 
         let uniform_bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: None,
@@ -597,7 +597,6 @@ impl<'window> State<'window> {
         Self {
             window,
             surface,
-            config,
             device,
             queue,
             bounding_geometry_pipeline,
@@ -723,53 +722,6 @@ impl<'window> State<'window> {
         self.queue.submit(Some(encoder.finish()));
         frame.present();
     }
-
-    //fn resize(
-    //    &mut self,
-    //    window_size: winit::dpi::PhysicalSize<u32>,
-    //) {
-    //    if window_size.width == 0 || window_size.height == 0 {
-    //        return;
-    //    }
-    //    if self.config.width == window_size.width && self.config.height == window_size.height {
-    //        return;
-    //    }
-    //    // Reconfigure the surface with the new size
-    //    self.config.width = window_size.width;
-    //    self.config.height = window_size.height;
-    //    self.surface.configure(&self.device, &self.config);
-
-    //    // self.intensity_texture = self.device.create_texture(&wgpu::TextureDescriptor {
-    //    //     label: None,
-    //    //     size: wgpu::Extent3d {
-    //    //         width: window_size.width,
-    //    //         height: window_size.height,
-    //    //         depth_or_array_layers: 1,
-    //    //     },
-    //    //     mip_level_count: 1,
-    //    //     sample_count: 1,
-    //    //     dimension: wgpu::TextureDimension::D2,
-    //    //     format: wgpu::TextureFormat::R32Float,
-    //    //     usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST | wgpu::TextureUsages::RENDER_ATTACHMENT,
-    //    //     view_formats: &[],
-    //    // });
-    //    // self.stencil_texture = self.device.create_texture(&wgpu::TextureDescriptor {
-    //    //     label: None,
-    //    //     size: wgpu::Extent3d {
-    //    //         width: window_size.width,
-    //    //         height: window_size.height,
-    //    //         depth_or_array_layers: 1,
-    //    //     },
-    //    //     mip_level_count: 1,
-    //    //     sample_count: 1,
-    //    //     dimension: wgpu::TextureDimension::D2,
-    //    //     format: wgpu::TextureFormat::Stencil8,
-    //    //     usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
-    //    //     view_formats: &[],
-    //    // });
-    //    // On macos the window needs to be redrawn manually after resizing
-    //    self.window.request_redraw();
-    //}
 }
 
 
@@ -825,14 +777,6 @@ impl winit::application::ApplicationHandler for App {
     ) {
         let state = self.state.as_mut().unwrap();
         match event {
-            winit::event::WindowEvent::Resized(window_size) => {
-                //state.resize(window_size)
-                state.config.width = window_size.width;
-                state.config.height = window_size.height;
-                state.surface.configure(&state.device, &state.config);
-                state.window.request_redraw();
-                //self.resumed(active_event_loop)
-            },
             winit::event::WindowEvent::RedrawRequested => {
                 let seconds = self.initial_timestamp.elapsed().as_secs_f32();
                 let (camera_uniform, model_uniform, style_uniform) = (self.uniform_data_getter)(seconds);
@@ -899,7 +843,7 @@ fn circle_segments(
 
 
 #[allow(unused)]
-fn example_basic() -> App {
+fn example_curve() -> App {
     App::new(
         winit::dpi::PhysicalSize {
             width: 1600,
@@ -907,9 +851,46 @@ fn example_basic() -> App {
         },
         vec![
             QuadraticBezier {
-                position_0: glam::Vec3::new(2.0, 1.0, 0.0),
-                position_1: glam::Vec3::new(0.0, -1.0, 0.0),
-                position_2: glam::Vec3::new(-2.0, 1.0, 0.0),
+                position_0: glam::Vec3::new(0.0, 0.0, 0.0),
+                position_1: glam::Vec3::new(1.0, 0.0, 0.0),
+                position_2: glam::Vec3::new(2.0, 1.0, 0.0),
+            },
+        ],
+        Box::new(|_| {
+            let camera_uniform = CameraUniform {
+                projection_matrix: glam::Mat4::perspective_rh(std::f32::consts::FRAC_PI_2, 16.0 / 9.0, 0.1, 100.0),
+                view_matrix: glam::Mat4::look_at_rh(2.0 * glam::Vec3::Z, glam::Vec3::ZERO, glam::Vec3::Y),
+            };
+            let model_uniform = ModelUniform {
+                model_matrix: glam::Mat4::IDENTITY,
+            };
+            let style_uniform = StyleUniform {
+                intensity_factor: 1.0,
+                thickness: 0.2,
+            };
+            (camera_uniform, model_uniform, style_uniform)
+        }),
+    )
+}
+
+
+#[allow(unused)]
+fn example_rotating_curve() -> App {
+    App::new(
+        winit::dpi::PhysicalSize {
+            width: 1600,
+            height: 900,
+        },
+        vec![
+            QuadraticBezier {
+                position_0: glam::Vec3::new(0.0, 0.0, 0.0),
+                position_1: glam::Vec3::new(1.0, 0.0, 0.0),
+                position_2: glam::Vec3::new(2.0, 1.0, 0.0),
+            },
+            QuadraticBezier {
+                position_0: glam::Vec3::new(0.0, 0.0, 0.0),
+                position_1: glam::Vec3::new(-1.0, 0.0, 0.0),
+                position_2: glam::Vec3::new(-2.0, -1.0, 0.0),
             },
         ],
         Box::new(|seconds| {
@@ -944,7 +925,7 @@ fn example_circle() -> App {
                 view_matrix: glam::Mat4::look_at_rh(glam::Vec3::Z * 3.0, glam::Vec3::ZERO, glam::Vec3::Y),
             };
             let model_uniform = ModelUniform {
-                model_matrix: glam::Mat4::from_quat(glam::Quat::from_rotation_y(seconds)),
+                model_matrix: glam::Mat4::IDENTITY,
             };
             let style_uniform = StyleUniform {
                 intensity_factor: 1.0,
@@ -994,6 +975,6 @@ fn example_sphere_mesh() -> App {
 
 fn main() {
     env_logger::init();
-    let mut app = example_sphere_mesh();
+    let mut app = example_circle();
     app.run();
 }
