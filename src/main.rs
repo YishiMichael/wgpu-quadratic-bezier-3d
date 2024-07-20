@@ -1,3 +1,7 @@
+// Modified from an example provided in https://github.com/gfx-rs/wgpu/
+
+mod colormap;
+
 use std::borrow::Cow;
 use std::sync::Arc;
 
@@ -6,44 +10,42 @@ use encase::{ShaderSize, ShaderType};
 
 #[derive(ShaderType)]
 struct CameraUniform {
-    projection_matrix: mint::ColumnMatrix4<f32>,
-    view_matrix: mint::ColumnMatrix4<f32>,
+    projection_matrix: glam::Mat4,
+    view_matrix: glam::Mat4,
 }
 
 
 #[derive(encase::ShaderType)]
 struct ModelUniform {
-    model_matrix: mint::ColumnMatrix4<f32>,
+    model_matrix: glam::Mat4,
 }
 
 
 #[derive(encase::ShaderType)]
 struct StyleUniform {
-    color: mint::Vector3<f32>,
-    opacity: f32,
+    intensity_factor: f32,
     thickness: f32,
 }
 
 
 #[derive(encase::ShaderType)]
 struct QuadraticBezier {
-    position_0: mint::Vector3<f32>,
-    position_1: mint::Vector3<f32>,
-    position_2: mint::Vector3<f32>,
+    position_0: glam::Vec3,
+    position_1: glam::Vec3,
+    position_2: glam::Vec3,
 }
 
 
 #[derive(encase::ShaderType)]
 struct Vertex {
-    position_0: mint::Vector3<f32>,
-    position_1: mint::Vector3<f32>,
-    position_2: mint::Vector3<f32>,
-    position: mint::Vector3<f32>,
+    position_0: glam::Vec3,
+    position_1: glam::Vec3,
+    position_2: glam::Vec3,
+    position: glam::Vec3,
 }
 
 
 struct State<'window> {
-    curve_data: Vec<QuadraticBezier>,
     window: Arc<winit::window::Window>,
     surface: wgpu::Surface<'window>,
     config: wgpu::SurfaceConfiguration,
@@ -52,40 +54,21 @@ struct State<'window> {
     bounding_geometry_pipeline: wgpu::ComputePipeline,
     intensity_pipeline: wgpu::RenderPipeline,
     frame_pipeline: wgpu::RenderPipeline,
+    intensity_texture: wgpu::Texture,
+    stencil_texture: wgpu::Texture,
     camera_uniform_buffer: wgpu::Buffer,
     model_uniform_buffer: wgpu::Buffer,
     style_uniform_buffer: wgpu::Buffer,
     quadratic_bezier_buffer: wgpu::Buffer,
     vertex_buffer: wgpu::Buffer,
     index_buffer: wgpu::Buffer,
-    intensity_texture: wgpu::Texture,
-    stencil_texture: wgpu::Texture,
     uniform_bind_group: wgpu::BindGroup,
     storage_bind_group: wgpu::BindGroup,
     texture_bind_group: wgpu::BindGroup,
-    initial_timestamp: std::time::Instant,
 }
 
 impl<'window> State<'window> {
-    async fn new(window: Arc<winit::window::Window>) -> Self {
-        let curve_data = vec![
-            QuadraticBezier {
-                position_0: [0.0, 0.0, 0.0].into(),
-                position_1: [1.0, 0.0, 0.0].into(),
-                position_2: [2.0, 1.0, 0.0].into(),
-            },
-            QuadraticBezier {
-                position_0: [0.0, 0.0, 0.0].into(),
-                position_1: [-1.0, 0.0, 0.0].into(),
-                position_2: [-2.0, -1.0, 0.0].into(),
-            },
-            //QuadraticBezier {
-            //    position_0: [-2.0, 1.0, 0.0].into(),
-            //    position_1: [0.0, -1.0, 0.0].into(),
-            //    position_2: [2.0, 1.0, 0.0].into(),
-            //},
-        ];
-
+    async fn new(window: Arc<winit::window::Window>, curve_len: usize) -> Self {
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
             backends: wgpu::Backends::PRIMARY,
             ..Default::default()
@@ -106,7 +89,11 @@ impl<'window> State<'window> {
             .request_device(
                 &wgpu::DeviceDescriptor {
                     label: None,
-                    required_features: wgpu::Features::BUFFER_BINDING_ARRAY | wgpu::Features::STORAGE_RESOURCE_BINDING_ARRAY | wgpu::Features::TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES,
+                    required_features: [
+                        wgpu::Features::BUFFER_BINDING_ARRAY,
+                        wgpu::Features::STORAGE_RESOURCE_BINDING_ARRAY,
+                        wgpu::Features::TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES,
+                    ].iter().copied().reduce(std::ops::BitOr::bitor).unwrap(),
                     // Make sure we use the texture resolution limits from the adapter, so we can support images the size of the swapchain.
                     required_limits: wgpu::Limits::default(),
                 },
@@ -231,6 +218,19 @@ impl<'window> State<'window> {
                     ty: wgpu::BindingType::Texture {
                         multisampled: false,
                         view_dimension: wgpu::TextureViewDimension::D2,
+                        sample_type: wgpu::TextureSampleType::Float {
+                            filterable: false
+                        },
+                    },
+                    count: None,
+                },
+                // var t_colormap: texture_1d<f32>;
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        multisampled: false,
+                        view_dimension: wgpu::TextureViewDimension::D1,
                         sample_type: wgpu::TextureSampleType::Float {
                             filterable: false
                         },
@@ -439,42 +439,6 @@ impl<'window> State<'window> {
             })
         };
 
-        let camera_uniform_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-            label: None,
-            size: CameraUniform::SHADER_SIZE.into(),
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
-        let model_uniform_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-            label: None,
-            size: ModelUniform::SHADER_SIZE.into(),
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
-        let style_uniform_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-            label: None,
-            size: StyleUniform::SHADER_SIZE.into(),
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
-        let quadratic_bezier_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-            label: None,
-            size: curve_data.len() as u64 * QuadraticBezier::SHADER_SIZE.get(),
-            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
-        let vertex_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-            label: None,
-            size: curve_data.len() as u64 * 10 * Vertex::SHADER_SIZE.get(),
-            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::VERTEX,
-            mapped_at_creation: false,
-        });
-        let index_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-            label: None,
-            size: curve_data.len() as u64 * 20 * wgpu::VertexFormat::Uint32.size(),
-            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::INDEX,
-            mapped_at_creation: false,
-        });
         let intensity_texture = device.create_texture(&wgpu::TextureDescriptor {
             label: None,
             size: wgpu::Extent3d {
@@ -502,6 +466,56 @@ impl<'window> State<'window> {
             format: wgpu::TextureFormat::Stencil8,
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
             view_formats: &[],
+        });
+        let colormap_texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: None,
+            size: wgpu::Extent3d {
+                width: colormap::VIRIDIS_COLORMAP.len() as u32,
+                height: 1,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D1,
+            format: wgpu::TextureFormat::Rgba32Float,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+        let camera_uniform_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: None,
+            size: CameraUniform::SHADER_SIZE.into(),
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let model_uniform_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: None,
+            size: ModelUniform::SHADER_SIZE.into(),
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let style_uniform_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: None,
+            size: StyleUniform::SHADER_SIZE.into(),
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let quadratic_bezier_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: None,
+            size: curve_len as u64 * QuadraticBezier::SHADER_SIZE.get(),
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let vertex_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: None,
+            size: curve_len as u64 * 10 * Vertex::SHADER_SIZE.get(),
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::VERTEX,
+            mapped_at_creation: false,
+        });
+        let index_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: None,
+            size: curve_len as u64 * 20 * wgpu::VertexFormat::Uint32.size(),
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::INDEX,
+            mapped_at_creation: false,
         });
         let uniform_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: None,
@@ -547,13 +561,40 @@ impl<'window> State<'window> {
                     binding: 0,
                     resource: wgpu::BindingResource::TextureView(&intensity_texture.create_view(&wgpu::TextureViewDescriptor::default())),
                 },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::TextureView(&colormap_texture.create_view(&wgpu::TextureViewDescriptor::default())),
+                },
             ],
         });
 
-        let initial_timestamp = std::time::Instant::now();
+        {
+            let colormap_len = colormap::VIRIDIS_COLORMAP.len();
+            let bytes_len = colormap_len * std::mem::size_of::<[f32; 4]>();
+            queue.write_texture(
+                wgpu::ImageCopyTexture {
+                    aspect: wgpu::TextureAspect::All,
+                    texture: &colormap_texture,
+                    mip_level: 0,
+                    origin: wgpu::Origin3d::ZERO,
+                },
+                unsafe {
+                    std::slice::from_raw_parts(colormap::VIRIDIS_COLORMAP.as_ptr() as *const u8, bytes_len)
+                },
+                wgpu::ImageDataLayout {
+                    offset: 0,
+                    bytes_per_row: Some(bytes_len as u32),
+                    rows_per_image: None,
+                },
+                wgpu::Extent3d {
+                    width: colormap_len as u32,
+                    height: 1,
+                    depth_or_array_layers: 1,
+                },
+            );
+        }
 
         Self {
-            curve_data,
             window,
             surface,
             config,
@@ -562,37 +603,29 @@ impl<'window> State<'window> {
             bounding_geometry_pipeline,
             intensity_pipeline,
             frame_pipeline,
+            intensity_texture,
+            stencil_texture,
             camera_uniform_buffer,
             model_uniform_buffer,
             style_uniform_buffer,
             quadratic_bezier_buffer,
             vertex_buffer,
             index_buffer,
-            intensity_texture,
-            stencil_texture,
             uniform_bind_group,
             storage_bind_group,
             texture_bind_group,
-            initial_timestamp,
         }
     }
 
-    fn render(&mut self) {
+    fn render(
+        &mut self,
+        camera_uniform: CameraUniform,
+        model_uniform: ModelUniform,
+        style_uniform: StyleUniform,
+        curve_len: usize,
+        curve_data: &[QuadraticBezier],
+    ) {
         {
-            let seconds = self.initial_timestamp.elapsed().as_secs_f32();
-            let aspect_ratio = self.config.width as f32 / self.config.height as f32;
-            let camera_uniform = CameraUniform {
-                projection_matrix: glam::Mat4::perspective_rh(std::f32::consts::FRAC_PI_2, aspect_ratio, 0.1, 100.0).into(),
-                view_matrix: glam::Mat4::look_at_rh(glam::Vec3::Z * 3.0, glam::Vec3::ZERO, glam::Vec3::Y).into(),
-            };
-            let model_uniform = ModelUniform {
-                model_matrix: glam::Mat4::from_quat(glam::Quat::from_rotation_y(seconds)).into(),
-            };
-            let style_uniform = StyleUniform {
-                color: [1.0, 1.0, 1.0].into(),
-                opacity: 1.0,
-                thickness: 0.2,
-            };
             // TODO
             let mut camera_uniform_cpu_buffer = encase::UniformBuffer::new(Vec::<u8>::new());
             camera_uniform_cpu_buffer.write(&camera_uniform).unwrap();
@@ -604,7 +637,7 @@ impl<'window> State<'window> {
             style_uniform_cpu_buffer.write(&style_uniform).unwrap();
             self.queue.write_buffer(&self.style_uniform_buffer, 0, style_uniform_cpu_buffer.as_ref());
             let mut quadratic_bezier_cpu_buffer = encase::StorageBuffer::new(Vec::<u8>::new());
-            quadratic_bezier_cpu_buffer.write(&self.curve_data).unwrap();
+            quadratic_bezier_cpu_buffer.write(curve_data).unwrap();
             self.queue.write_buffer(&self.quadratic_bezier_buffer, 0, quadratic_bezier_cpu_buffer.as_ref());
         }
 
@@ -624,7 +657,7 @@ impl<'window> State<'window> {
             bounding_geometry_pass.set_pipeline(&self.bounding_geometry_pipeline);
             bounding_geometry_pass.set_bind_group(0, &self.uniform_bind_group, &[]);
             bounding_geometry_pass.set_bind_group(1, &self.storage_bind_group, &[]);
-            bounding_geometry_pass.dispatch_workgroups((self.curve_data.len() as u32 + 63) / 64, 1, 1);
+            bounding_geometry_pass.dispatch_workgroups((curve_len as u32 + 63) / 64, 1, 1);
         }
 
         {
@@ -654,7 +687,7 @@ impl<'window> State<'window> {
             intensity_pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
             intensity_pass.set_index_buffer(self.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
             intensity_pass.set_stencil_reference(1);
-            intensity_pass.draw_indexed(0..(20 * self.curve_data.len() as u32), 0, 0..1);
+            intensity_pass.draw_indexed(0..(20 * curve_len as u32), 0, 0..1);
         }
 
         {
@@ -691,56 +724,276 @@ impl<'window> State<'window> {
         frame.present();
     }
 
-    fn resize(&mut self, new_size: winit::dpi::PhysicalSize<u32>) {
-        if new_size.width > 0 && new_size.height > 0 {
-            // Reconfigure the surface with the new size
-            self.config.width = new_size.width;
-            self.config.height = new_size.height;
-            self.surface.configure(&self.device, &self.config);
-            // On macos the window needs to be redrawn manually after resizing
-            self.window.request_redraw();
+    //fn resize(
+    //    &mut self,
+    //    window_size: winit::dpi::PhysicalSize<u32>,
+    //) {
+    //    if window_size.width == 0 || window_size.height == 0 {
+    //        return;
+    //    }
+    //    if self.config.width == window_size.width && self.config.height == window_size.height {
+    //        return;
+    //    }
+    //    // Reconfigure the surface with the new size
+    //    self.config.width = window_size.width;
+    //    self.config.height = window_size.height;
+    //    self.surface.configure(&self.device, &self.config);
+
+    //    // self.intensity_texture = self.device.create_texture(&wgpu::TextureDescriptor {
+    //    //     label: None,
+    //    //     size: wgpu::Extent3d {
+    //    //         width: window_size.width,
+    //    //         height: window_size.height,
+    //    //         depth_or_array_layers: 1,
+    //    //     },
+    //    //     mip_level_count: 1,
+    //    //     sample_count: 1,
+    //    //     dimension: wgpu::TextureDimension::D2,
+    //    //     format: wgpu::TextureFormat::R32Float,
+    //    //     usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST | wgpu::TextureUsages::RENDER_ATTACHMENT,
+    //    //     view_formats: &[],
+    //    // });
+    //    // self.stencil_texture = self.device.create_texture(&wgpu::TextureDescriptor {
+    //    //     label: None,
+    //    //     size: wgpu::Extent3d {
+    //    //         width: window_size.width,
+    //    //         height: window_size.height,
+    //    //         depth_or_array_layers: 1,
+    //    //     },
+    //    //     mip_level_count: 1,
+    //    //     sample_count: 1,
+    //    //     dimension: wgpu::TextureDimension::D2,
+    //    //     format: wgpu::TextureFormat::Stencil8,
+    //    //     usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+    //    //     view_formats: &[],
+    //    // });
+    //    // On macos the window needs to be redrawn manually after resizing
+    //    self.window.request_redraw();
+    //}
+}
+
+
+struct App {
+    window_size: winit::dpi::PhysicalSize<u32>,
+    state: Option<State<'static>>,
+    curve_data: Vec<QuadraticBezier>,
+    uniform_data_getter: Box<dyn Fn(f32) -> (CameraUniform, ModelUniform, StyleUniform)>,
+    initial_timestamp: std::time::Instant,
+}
+
+impl App {
+    fn new(
+        window_size: winit::dpi::PhysicalSize<u32>,
+        curve_data: Vec<QuadraticBezier>,
+        uniform_data_getter: Box<dyn Fn(f32) -> (CameraUniform, ModelUniform, StyleUniform)>,
+    ) -> Self {
+        Self {
+            window_size,
+            state: None,
+            curve_data,
+            uniform_data_getter,
+            initial_timestamp: std::time::Instant::now(),
         }
+    }
+
+    fn run(&mut self) {
+        let event_loop = winit::event_loop::EventLoop::new().unwrap();
+        let _ = event_loop.run_app(self);
     }
 }
 
-struct App<'window> {
-    state: Option<State<'window>>,
-}
-
-impl<'window> winit::application::ApplicationHandler for App<'window> {
-    fn resumed(&mut self, active_event_loop: &winit::event_loop::ActiveEventLoop) {
+impl winit::application::ApplicationHandler for App {
+    fn resumed(
+        &mut self,
+        active_event_loop: &winit::event_loop::ActiveEventLoop,
+    ) {
         if self.state.is_some() {
             return;
         }
-        let state = pollster::block_on(State::new(Arc::new(active_event_loop.create_window(winit::window::Window::default_attributes()).unwrap())));
+        let state = pollster::block_on(State::new(
+            Arc::new(active_event_loop.create_window(winit::window::Window::default_attributes().with_inner_size(self.window_size)).unwrap()),
+            self.curve_data.len(),
+        ));
         self.state = Some(state);
     }
 
-    fn window_event(&mut self, active_event_loop: &winit::event_loop::ActiveEventLoop, _: winit::window::WindowId, event: winit::event::WindowEvent) {
+    fn window_event(
+        &mut self,
+        active_event_loop: &winit::event_loop::ActiveEventLoop,
+        _: winit::window::WindowId,
+        event: winit::event::WindowEvent,
+    ) {
         let state = self.state.as_mut().unwrap();
         match event {
-            winit::event::WindowEvent::Resized(new_size) => {
-                state.resize(new_size)
-            }
+            winit::event::WindowEvent::Resized(window_size) => {
+                //state.resize(window_size)
+                state.config.width = window_size.width;
+                state.config.height = window_size.height;
+                state.surface.configure(&state.device, &state.config);
+                state.window.request_redraw();
+                //self.resumed(active_event_loop)
+            },
             winit::event::WindowEvent::RedrawRequested => {
-                state.render()
-            }
-            winit::event::WindowEvent::CloseRequested => active_event_loop.exit(),
+                let seconds = self.initial_timestamp.elapsed().as_secs_f32();
+                let (camera_uniform, model_uniform, style_uniform) = (self.uniform_data_getter)(seconds);
+                state.render(
+                    camera_uniform,
+                    model_uniform,
+                    style_uniform,
+                    self.curve_data.len(),
+                    self.curve_data.as_slice(),
+                )
+            },
+            winit::event::WindowEvent::CloseRequested => {
+                active_event_loop.exit()
+            },
             _ => {}
         };
     }
 
-    fn about_to_wait(&mut self, _: &winit::event_loop::ActiveEventLoop) {
+    fn about_to_wait(
+        &mut self,
+        _: &winit::event_loop::ActiveEventLoop,
+    ) {
         let state = self.state.as_mut().unwrap();
         state.window.request_redraw();
     }
 }
 
 
-pub fn main() {
+fn linspace(start: f32, end: f32, n_step: usize) -> Vec<f32> {
+    assert!(n_step != 0);
+    let step = (end - start) / n_step as f32;
+    (0..=n_step).map(|index| {
+        start + index as f32 * step
+    }).collect()
+}
+
+fn circle_segments(
+    origin: glam::Vec3,
+    radius: glam::Vec3,
+    normal: glam::Vec3,
+) -> Vec<QuadraticBezier> {
+    const N_SEGMENTS: usize = 16;
+    let transform = glam::Affine3A::from_cols(
+        radius.into(),
+        normal.normalize().cross(radius).into(),
+        glam::Vec3::ZERO.into(),
+        origin.into(),
+    );
+    linspace(0.0, std::f32::consts::TAU, N_SEGMENTS).as_slice().windows(2).map(|window| {
+        let theta_0 = window[0];
+        let theta_2 = window[1];
+        let theta_1 = (theta_0 + theta_2) / 2.0;
+        let d_theta = (theta_2 - theta_0) / 2.0;
+        let (sin_theta_0, cos_theta_0) = theta_0.sin_cos();
+        let (sin_theta_2, cos_theta_2) = theta_2.sin_cos();
+        let (sin_theta_1, cos_theta_1) = theta_1.sin_cos();
+        QuadraticBezier {
+            position_0: transform.transform_point3(cos_theta_0 * glam::Vec3::X + sin_theta_0 * glam::Vec3::Y),
+            position_1: transform.transform_point3((cos_theta_1 * glam::Vec3::X + sin_theta_1 * glam::Vec3::Y) / d_theta.cos()),
+            position_2: transform.transform_point3(cos_theta_2 * glam::Vec3::X + sin_theta_2 * glam::Vec3::Y),
+        }
+    }).collect()
+}
+
+
+#[allow(unused)]
+fn example_basic() -> App {
+    App::new(
+        winit::dpi::PhysicalSize {
+            width: 1600,
+            height: 900,
+        },
+        vec![
+            QuadraticBezier {
+                position_0: glam::Vec3::new(2.0, 1.0, 0.0),
+                position_1: glam::Vec3::new(0.0, -1.0, 0.0),
+                position_2: glam::Vec3::new(-2.0, 1.0, 0.0),
+            },
+        ],
+        Box::new(|seconds| {
+            let camera_uniform = CameraUniform {
+                projection_matrix: glam::Mat4::perspective_rh(std::f32::consts::FRAC_PI_2, 16.0 / 9.0, 0.1, 100.0),
+                view_matrix: glam::Mat4::look_at_rh(3.0 * glam::Vec3::Z, glam::Vec3::ZERO, glam::Vec3::Y),
+            };
+            let model_uniform = ModelUniform {
+                model_matrix: glam::Mat4::from_quat(glam::Quat::from_rotation_y(seconds)),
+            };
+            let style_uniform = StyleUniform {
+                intensity_factor: 1.0,
+                thickness: 0.2,
+            };
+            (camera_uniform, model_uniform, style_uniform)
+        }),
+    )
+}
+
+
+#[allow(unused)]
+fn example_circle() -> App {
+    App::new(
+        winit::dpi::PhysicalSize {
+            width: 1600,
+            height: 900,
+        },
+        circle_segments(glam::Vec3::ZERO, glam::Vec3::X, glam::Vec3::Z),
+        Box::new(|seconds| {
+            let camera_uniform = CameraUniform {
+                projection_matrix: glam::Mat4::perspective_rh(std::f32::consts::FRAC_PI_2, 16.0 / 9.0, 0.1, 100.0),
+                view_matrix: glam::Mat4::look_at_rh(glam::Vec3::Z * 3.0, glam::Vec3::ZERO, glam::Vec3::Y),
+            };
+            let model_uniform = ModelUniform {
+                model_matrix: glam::Mat4::from_quat(glam::Quat::from_rotation_y(seconds)),
+            };
+            let style_uniform = StyleUniform {
+                intensity_factor: 1.0,
+                thickness: 0.2,
+            };
+            (camera_uniform, model_uniform, style_uniform)
+        }),
+    )
+}
+
+
+#[allow(unused)]
+fn example_sphere_mesh() -> App {
+    const N_LONGITUDE: usize = 12;
+    const N_LATITUDE: usize = 7;
+    App::new(
+        winit::dpi::PhysicalSize {
+            width: 1600,
+            height: 900,
+        },
+        linspace(0.0, std::f32::consts::TAU, N_LONGITUDE).iter().skip(1).map(|longitude| {
+            let (sin_longitude, cos_longitude) = longitude.sin_cos();
+            circle_segments(glam::Vec3::ZERO, glam::Vec3::Y, sin_longitude * glam::Vec3::X + cos_longitude * glam::Vec3::Z)
+        }).flatten().chain(
+            linspace(0.0, std::f32::consts::PI, N_LATITUDE).iter().map(|latitude| {
+                let (sin_latitude, cos_latitude) = latitude.sin_cos();
+                circle_segments(cos_latitude * glam::Vec3::Y, sin_latitude * glam::Vec3::X, glam::Vec3::Y)
+            }).flatten()
+        ).collect(),
+        Box::new(|seconds| {
+            let camera_uniform = CameraUniform {
+                projection_matrix: glam::Mat4::perspective_rh(std::f32::consts::FRAC_PI_2, 16.0 / 9.0, 0.1, 100.0).into(),
+                view_matrix: glam::Mat4::look_at_rh(glam::Vec3::Z * 1.5, glam::Vec3::ZERO, glam::Vec3::Y).into(),
+            };
+            let model_uniform = ModelUniform {
+                model_matrix: glam::Mat4::from_quat(glam::Quat::from_rotation_y(seconds) * glam::Quat::from_rotation_x(0.75 * seconds)).into(),
+            };
+            let style_uniform = StyleUniform {
+                intensity_factor: 0.3,
+                thickness: 0.02,
+            };
+            (camera_uniform, model_uniform, style_uniform)
+        }),
+    )
+}
+
+
+fn main() {
     env_logger::init();
-    let event_loop = winit::event_loop::EventLoop::new().unwrap();
-    let _ = event_loop.run_app(&mut App {
-        state: None
-    });
+    let mut app = example_sphere_mesh();
+    app.run();
 }

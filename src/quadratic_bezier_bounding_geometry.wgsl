@@ -1,25 +1,24 @@
 struct StyleUniform {
-    color: vec3<f32>,
-    opacity: f32,
+    intensity_factor: f32,
     thickness: f32,
-};
+}
 
 struct QuadraticBezier {
     position_0: vec3<f32>,
     position_1: vec3<f32>,
     position_2: vec3<f32>,
-};
+}
 
 struct Vertex {
     position_0: vec3<f32>,
     position_1: vec3<f32>,
     position_2: vec3<f32>,
     position: vec3<f32>,
-};
+}
 
 struct GeometryVertices {
     vertices: array<vec3<f32>, 10>,
-};
+}
 
 
 @group(0) @binding(2) var<uniform> u_style: StyleUniform;
