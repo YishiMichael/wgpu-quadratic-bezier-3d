@@ -3,6 +3,10 @@ struct StyleUniform {
     thickness: f32,
 }
 
+struct Rgb {
+    value: vec3<f32>,
+}
+
 struct Vertex {
     @builtin(vertex_index) vertex_index: u32,
 }
@@ -14,8 +18,8 @@ struct VertexOutput {
 
 
 @group(0) @binding(2) var<uniform> u_style: StyleUniform;
-@group(1) @binding(0) var t_intensity: texture_2d<f32>;
-@group(1) @binding(1) var t_colormap: texture_1d<f32>;
+@group(1) @binding(0) var<storage, read> s_colormap: array<Rgb>;
+@group(2) @binding(0) var t_intensity: texture_2d<f32>;
 
 
 @vertex
@@ -46,6 +50,6 @@ fn fs_main(
 ) -> @location(0) vec4<f32> {
     let intensity = textureLoad(t_intensity, vec2<u32>(in.uv * vec2<f32>(textureDimensions(t_intensity))), 0).r;
     let rescaled_intensity = clamp(intensity * u_style.intensity_factor, 0.0, 1.0);
-    let color = textureLoad(t_colormap, u32(rescaled_intensity * f32(textureDimensions(t_colormap) - 1)), 0);
-    return color;
+    let rgb = s_colormap[u32(rescaled_intensity * 255.0)];
+    return vec4(rgb.value, 1.0);
 }

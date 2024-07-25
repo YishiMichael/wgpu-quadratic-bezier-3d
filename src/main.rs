@@ -15,20 +15,26 @@ struct CameraUniform {
 }
 
 
-#[derive(encase::ShaderType)]
+#[derive(ShaderType)]
 struct ModelUniform {
     model_matrix: glam::Mat4,
 }
 
 
-#[derive(encase::ShaderType)]
+#[derive(ShaderType)]
 struct StyleUniform {
     intensity_factor: f32,
     thickness: f32,
 }
 
 
-#[derive(encase::ShaderType)]
+#[derive(ShaderType)]
+struct Rgb {
+    value: glam::Vec3,
+}
+
+
+#[derive(ShaderType)]
 struct QuadraticBezier {
     position_0: glam::Vec3,
     position_1: glam::Vec3,
@@ -36,7 +42,7 @@ struct QuadraticBezier {
 }
 
 
-#[derive(encase::ShaderType)]
+#[derive(ShaderType)]
 struct Vertex {
     position_0: glam::Vec3,
     position_1: glam::Vec3,
@@ -62,7 +68,8 @@ struct State<'window> {
     vertex_buffer: wgpu::Buffer,
     index_buffer: wgpu::Buffer,
     uniform_bind_group: wgpu::BindGroup,
-    storage_bind_group: wgpu::BindGroup,
+    static_storage_bind_group: wgpu::BindGroup,
+    compute_storage_bind_group: wgpu::BindGroup,
     texture_bind_group: wgpu::BindGroup,
 }
 
@@ -164,7 +171,25 @@ impl<'window> State<'window> {
                 },
             ],
         });
-        let storage_bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        let static_storage_bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: None,
+            entries: &[
+                // var<storage, read> s_colormap: array<Rgb>
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage {
+                            read_only: true,
+                        },
+                        has_dynamic_offset: false,
+                        min_binding_size: Some(Rgb::SHADER_SIZE),
+                    },
+                    count: None,
+                },
+            ],
+        });
+        let compute_storage_bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: None,
             entries: &[
                 // var<storage, read> s_in: array<QuadraticBezier>
@@ -224,19 +249,6 @@ impl<'window> State<'window> {
                     },
                     count: None,
                 },
-                // var t_colormap: texture_1d<f32>;
-                wgpu::BindGroupLayoutEntry {
-                    binding: 1,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Texture {
-                        multisampled: false,
-                        view_dimension: wgpu::TextureViewDimension::D1,
-                        sample_type: wgpu::TextureSampleType::Float {
-                            filterable: false
-                        },
-                    },
-                    count: None,
-                },
             ],
         });
 
@@ -249,7 +261,7 @@ impl<'window> State<'window> {
                 label: None,
                 bind_group_layouts: &[
                     &uniform_bind_group_layout,
-                    &storage_bind_group_layout,
+                    &compute_storage_bind_group_layout,
                 ],
                 push_constant_ranges: &[],
             });
@@ -379,6 +391,7 @@ impl<'window> State<'window> {
                 label: None,
                 bind_group_layouts: &[
                     &uniform_bind_group_layout,
+                    &static_storage_bind_group_layout,
                     &texture_bind_group_layout,
                 ],
                 push_constant_ranges: &[],
@@ -467,24 +480,10 @@ impl<'window> State<'window> {
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
             view_formats: &[],
         });
-        let colormap_texture = device.create_texture(&wgpu::TextureDescriptor {
-            label: None,
-            size: wgpu::Extent3d {
-                width: colormap::VIRIDIS_COLORMAP.len() as u32,
-                height: 1,
-                depth_or_array_layers: 1,
-            },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D1,
-            format: wgpu::TextureFormat::Rgba32Float,
-            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
-            view_formats: &[],
-        });
         let camera_uniform_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: None,
             size: CameraUniform::SHADER_SIZE.into(),
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,  // TODO: MAP_WRITE ?
             mapped_at_creation: false,
         });
         let model_uniform_buffer = device.create_buffer(&wgpu::BufferDescriptor {
@@ -517,6 +516,22 @@ impl<'window> State<'window> {
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::INDEX,
             mapped_at_creation: false,
         });
+        let colormap_buffer = {
+            let colormap_data = colormap::VIRIDIS_COLORMAP.map(|value| Rgb {
+                value: glam::Vec3::from_array(value)
+            });
+            let buffer = device.create_buffer(&wgpu::BufferDescriptor {
+                label: None,
+                size: colormap_data.len() as u64 * Rgb::SHADER_SIZE.get(),
+                usage: wgpu::BufferUsages::STORAGE,
+                mapped_at_creation: true,
+            });
+            let mut colormap_cpu_buffer = encase::UniformBuffer::new(Vec::<u8>::new());
+            colormap_cpu_buffer.write(&colormap_data).unwrap();
+            buffer.slice(..).get_mapped_range_mut().copy_from_slice(colormap_cpu_buffer.as_ref());
+            buffer.unmap();
+            buffer
+        };
         let uniform_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: None,
             layout: &uniform_bind_group_layout,
@@ -535,9 +550,19 @@ impl<'window> State<'window> {
                 },
             ],
         });
-        let storage_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        let static_storage_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: None,
-            layout: &storage_bind_group_layout,
+            layout: &static_storage_bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: colormap_buffer.as_entire_binding(),
+                },
+            ],
+        });
+        let compute_storage_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: None,
+            layout: &compute_storage_bind_group_layout,
             entries: &[
                 wgpu::BindGroupEntry {
                     binding: 0,
@@ -561,38 +586,8 @@ impl<'window> State<'window> {
                     binding: 0,
                     resource: wgpu::BindingResource::TextureView(&intensity_texture.create_view(&wgpu::TextureViewDescriptor::default())),
                 },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: wgpu::BindingResource::TextureView(&colormap_texture.create_view(&wgpu::TextureViewDescriptor::default())),
-                },
             ],
         });
-
-        {
-            let colormap_len = colormap::VIRIDIS_COLORMAP.len();
-            let bytes_len = colormap_len * std::mem::size_of::<[f32; 4]>();
-            queue.write_texture(
-                wgpu::ImageCopyTexture {
-                    aspect: wgpu::TextureAspect::All,
-                    texture: &colormap_texture,
-                    mip_level: 0,
-                    origin: wgpu::Origin3d::ZERO,
-                },
-                unsafe {
-                    std::slice::from_raw_parts(colormap::VIRIDIS_COLORMAP.as_ptr() as *const u8, bytes_len)
-                },
-                wgpu::ImageDataLayout {
-                    offset: 0,
-                    bytes_per_row: Some(bytes_len as u32),
-                    rows_per_image: None,
-                },
-                wgpu::Extent3d {
-                    width: colormap_len as u32,
-                    height: 1,
-                    depth_or_array_layers: 1,
-                },
-            );
-        }
 
         Self {
             window,
@@ -611,21 +606,20 @@ impl<'window> State<'window> {
             vertex_buffer,
             index_buffer,
             uniform_bind_group,
-            storage_bind_group,
+            static_storage_bind_group,
+            compute_storage_bind_group,
             texture_bind_group,
         }
     }
 
     fn render(
         &mut self,
-        camera_uniform: CameraUniform,
-        model_uniform: ModelUniform,
-        style_uniform: StyleUniform,
-        curve_len: usize,
+        camera_uniform: &CameraUniform,
+        model_uniform: &ModelUniform,
+        style_uniform: &StyleUniform,
         curve_data: &[QuadraticBezier],
     ) {
         {
-            // TODO
             let mut camera_uniform_cpu_buffer = encase::UniformBuffer::new(Vec::<u8>::new());
             camera_uniform_cpu_buffer.write(&camera_uniform).unwrap();
             self.queue.write_buffer(&self.camera_uniform_buffer, 0, camera_uniform_cpu_buffer.as_ref());
@@ -655,8 +649,8 @@ impl<'window> State<'window> {
             });
             bounding_geometry_pass.set_pipeline(&self.bounding_geometry_pipeline);
             bounding_geometry_pass.set_bind_group(0, &self.uniform_bind_group, &[]);
-            bounding_geometry_pass.set_bind_group(1, &self.storage_bind_group, &[]);
-            bounding_geometry_pass.dispatch_workgroups((curve_len as u32 + 63) / 64, 1, 1);
+            bounding_geometry_pass.set_bind_group(1, &self.compute_storage_bind_group, &[]);
+            bounding_geometry_pass.dispatch_workgroups((curve_data.len() as u32 + 63) / 64, 1, 1);
         }
 
         {
@@ -686,7 +680,7 @@ impl<'window> State<'window> {
             intensity_pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
             intensity_pass.set_index_buffer(self.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
             intensity_pass.set_stencil_reference(1);
-            intensity_pass.draw_indexed(0..(20 * curve_len as u32), 0, 0..1);
+            intensity_pass.draw_indexed(0..(20 * curve_data.len() as u32), 0, 0..1);
         }
 
         {
@@ -713,7 +707,8 @@ impl<'window> State<'window> {
             });
             frame_pass.set_pipeline(&self.frame_pipeline);
             frame_pass.set_bind_group(0, &self.uniform_bind_group, &[]);
-            frame_pass.set_bind_group(1, &self.texture_bind_group, &[]);
+            frame_pass.set_bind_group(1, &self.static_storage_bind_group, &[]);
+            frame_pass.set_bind_group(2, &self.texture_bind_group, &[]);
             frame_pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
             frame_pass.set_stencil_reference(1);
             frame_pass.draw(0..3, 0..1);
@@ -781,10 +776,9 @@ impl winit::application::ApplicationHandler for App {
                 let seconds = self.initial_timestamp.elapsed().as_secs_f32();
                 let (camera_uniform, model_uniform, style_uniform) = (self.uniform_data_getter)(seconds);
                 state.render(
-                    camera_uniform,
-                    model_uniform,
-                    style_uniform,
-                    self.curve_data.len(),
+                    &camera_uniform,
+                    &model_uniform,
+                    &style_uniform,
                     self.curve_data.as_slice(),
                 )
             },
@@ -939,14 +933,14 @@ fn example_circle() -> App {
 
 #[allow(unused)]
 fn example_sphere_mesh() -> App {
-    const N_LONGITUDE: usize = 12;
+    const N_LONGITUDE: usize = 6;
     const N_LATITUDE: usize = 7;
     App::new(
         winit::dpi::PhysicalSize {
             width: 1600,
             height: 900,
         },
-        linspace(0.0, std::f32::consts::TAU, N_LONGITUDE).iter().skip(1).map(|longitude| {
+        linspace(0.0, std::f32::consts::PI, N_LONGITUDE).iter().skip(1).map(|longitude| {
             let (sin_longitude, cos_longitude) = longitude.sin_cos();
             circle_segments(glam::Vec3::ZERO, glam::Vec3::Y, sin_longitude * glam::Vec3::X + cos_longitude * glam::Vec3::Z)
         }).flatten().chain(
@@ -964,7 +958,7 @@ fn example_sphere_mesh() -> App {
                 model_matrix: glam::Mat4::from_quat(glam::Quat::from_rotation_y(seconds) * glam::Quat::from_rotation_x(0.75 * seconds)).into(),
             };
             let style_uniform = StyleUniform {
-                intensity_factor: 0.3,
+                intensity_factor: 0.5,
                 thickness: 0.02,
             };
             (camera_uniform, model_uniform, style_uniform)
@@ -975,6 +969,6 @@ fn example_sphere_mesh() -> App {
 
 fn main() {
     env_logger::init();
-    let mut app = example_circle();
+    let mut app = example_sphere_mesh();
     app.run();
 }
