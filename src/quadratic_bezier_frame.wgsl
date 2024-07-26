@@ -7,10 +7,6 @@ struct Rgb {
     value: vec3<f32>,
 }
 
-struct Vertex {
-    @builtin(vertex_index) vertex_index: u32,
-}
-
 struct VertexOutput {
     @builtin(position) clip_position: vec4<f32>,
     @location(0) uv: vec2<f32>,
@@ -24,7 +20,7 @@ struct VertexOutput {
 
 @vertex
 fn vs_main(
-    in: Vertex,
+    @builtin(vertex_index) vertex_index: u32,
 ) -> VertexOutput {
     // https://www.saschawillems.de/blog/2016/08/13/vulkan-tutorial-on-rendering-a-fullscreen-quad-without-buffers/
     // https://gpuweb.github.io/gpuweb/#coordinate-systems
@@ -35,8 +31,8 @@ fn vs_main(
     // | 2            | (2, 0) | (+3, +1, 0, 1) |
     // Emits a triangle covering the full screen.
     // The vertices are arranged in counterclockwise orientation.
-    let u = f32(in.vertex_index & 2);
-    let v = f32((in.vertex_index << 1) & 2);
+    let u = f32(vertex_index & 2);
+    let v = f32((vertex_index << 1) & 2);
     return VertexOutput(
         vec4(2.0 * u - 1.0, 1.0 - 2.0 * v, 0.0, 1.0),
         vec2(u, v),
