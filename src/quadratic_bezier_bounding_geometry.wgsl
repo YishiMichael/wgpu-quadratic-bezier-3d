@@ -116,14 +116,26 @@ fn shift_plane(
     return Vector3DPGA(vector.bulk, vector.weight + offset * length(vector.bulk));
 }
 
+fn from_euclid_position(
+    position: vec3<f32>,
+) -> Trivector3DPGA {
+    return Trivector3DPGA(1.0, position);
+}
+
+fn into_euclid_position(
+    trivector: Trivector3DPGA,
+) -> vec3<f32> {
+    return trivector.weight / trivector.bulk;
+}
+
 
 fn compute_bounding_geometry_non_collinear(
     quadratic_bezier: QuadraticBezier,
     radius: f32,
 ) -> GeometryVertices {
-    let point_0 = Trivector3DPGA(1.0, quadratic_bezier.position_0);
-    let point_1 = Trivector3DPGA(1.0, quadratic_bezier.position_1);
-    let point_2 = Trivector3DPGA(1.0, quadratic_bezier.position_2);
+    let point_0 = from_euclid_position(quadratic_bezier.position_0);
+    let point_1 = from_euclid_position(quadratic_bezier.position_1);
+    let point_2 = from_euclid_position(quadratic_bezier.position_2);
     let line_01 = point_antiwedge_point(point_0, point_1);
     let line_12 = point_antiwedge_point(point_1, point_2);
     let line_20 = point_antiwedge_point(point_2, point_0);
@@ -151,16 +163,16 @@ fn compute_bounding_geometry_non_collinear(
     let lower_point_02 = plane_wedge_line(lower_plane, perp_line_02);
     let lower_point_20 = plane_wedge_line(lower_plane, perp_line_20);
     return GeometryVertices(array(
-        upper_point_1.weight / upper_point_1.bulk,
-        upper_point_01.weight / upper_point_01.bulk,
-        upper_point_02.weight / upper_point_02.bulk,
-        upper_point_20.weight / upper_point_20.bulk,
-        upper_point_21.weight / upper_point_21.bulk,
-        lower_point_1.weight / lower_point_1.bulk,
-        lower_point_01.weight / lower_point_01.bulk,
-        lower_point_02.weight / lower_point_02.bulk,
-        lower_point_20.weight / lower_point_20.bulk,
-        lower_point_21.weight / lower_point_21.bulk,
+        into_euclid_position(upper_point_1),
+        into_euclid_position(upper_point_01),
+        into_euclid_position(upper_point_02),
+        into_euclid_position(upper_point_20),
+        into_euclid_position(upper_point_21),
+        into_euclid_position(lower_point_1),
+        into_euclid_position(lower_point_01),
+        into_euclid_position(lower_point_02),
+        into_euclid_position(lower_point_20),
+        into_euclid_position(lower_point_21),
     ));
 }
 
