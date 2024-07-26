@@ -28,63 +28,92 @@ struct GeometryVertices {
 
 
 // PGA utilities
-// vector vec4 basis: e1, e2, e3, e0
-// bivector mat2x3 basis: e01, e02, e03, e23, e31, e12
-// trivector vec4 basis: e032, e013, e021, e123
+
+struct Vector3DPGA {
+    bulk: vec3<f32>,    // basis: e1, e2, e3
+    weight: f32,        // basis: e0
+}
+
+struct Bivector3DPGA {
+    bulk: vec3<f32>,    // basis: e23, e31, e12
+    weight: vec3<f32>,  // basis: e01, e02, e03
+}
+
+struct Trivector3DPGA {
+    bulk: f32,          // basis: e123
+    weight: vec3<f32>,  // basis: e032, e013, e021
+}
+
+// Duals
+fn plane_dual(
+    vector: Vector3DPGA
+) -> Trivector3DPGA {
+    return Trivector3DPGA(vector.weight, vector.bulk);
+}
+
+fn line_dual(
+    bivector: Bivector3DPGA
+) -> Bivector3DPGA {
+    return Bivector3DPGA(bivector.weight, bivector.bulk);
+}
+
+fn point_dual(
+    trivector: Trivector3DPGA
+) -> Vector3DPGA {
+    return Vector3DPGA(trivector.weight, trivector.bulk);
+}
 
 // Meets
 fn plane_wedge_plane(
-    vector_0: vec4<f32>,
-    vector_1: vec4<f32>,
-) -> mat2x3<f32> {
-    return mat2x3(vector_0.w * vector_1.xyz - vector_0.xyz * vector_1.w, cross(vector_0.xyz, vector_1.xyz));
+    vector_0: Vector3DPGA,
+    vector_1: Vector3DPGA,
+) -> Bivector3DPGA {
+    return Bivector3DPGA(cross(vector_0.bulk, vector_1.bulk), vector_0.weight * vector_1.bulk - vector_0.bulk * vector_1.weight);
 }
 
 fn plane_wedge_line(
-    vector: vec4<f32>,
-    bivector: mat2x3<f32>,
-) -> vec4<f32> {
-    return vec4(cross(vector.xyz, bivector[0]) - vector.w * bivector[1], dot(vector.xyz, bivector[1]));
+    vector: Vector3DPGA,
+    bivector: Bivector3DPGA,
+) -> Trivector3DPGA {
+    return Trivector3DPGA(dot(vector.bulk, bivector.bulk), cross(vector.bulk, bivector.weight) - vector.weight * bivector.bulk);
 }
 
 // Joins
 fn line_antiwedge_point(
-    bivector: mat2x3<f32>,
-    trivector: vec4<f32>,
-) -> vec4<f32> {
-    let dual_bivector = mat2x3(bivector[1], bivector[0]);
-    return -plane_wedge_line(trivector, dual_bivector);
+    bivector: Bivector3DPGA,
+    trivector: Trivector3DPGA,
+) -> Vector3DPGA {
+    return point_dual(plane_wedge_line(point_dual(trivector), line_dual(bivector)));
 }
 
 fn point_antiwedge_point(
-    trivector_0: vec4<f32>,
-    trivector_1: vec4<f32>,
-) -> mat2x3<f32> {
-    let dual_bivector = plane_wedge_plane(trivector_0, trivector_1);
-    return mat2x3(dual_bivector[1], dual_bivector[0]);
+    trivector_0: Trivector3DPGA,
+    trivector_1: Trivector3DPGA,
+) -> Bivector3DPGA {
+    return line_dual(plane_wedge_plane(point_dual(trivector_0), point_dual(trivector_1)));
 }
 
 // Expansions
 fn plane_dot_line(
-    vector: vec4<f32>,
-    bivector: mat2x3<f32>,
-) -> vec4<f32> {
-    return vec4(-cross(vector.xyz, bivector[1]), -dot(vector.xyz, bivector[0]));
+    vector: Vector3DPGA,
+    bivector: Bivector3DPGA,
+) -> Vector3DPGA {
+    return Vector3DPGA(-cross(vector.bulk, bivector.bulk), -dot(vector.bulk, bivector.weight));
 }
 
 fn line_dot_point(
-    bivector: mat2x3<f32>,
-    trivector: vec4<f32>,
-) -> vec4<f32> {
-    return vec4(-bivector[1] * trivector.w, dot(bivector[1], trivector.xyz));
+    bivector: Bivector3DPGA,
+    trivector: Trivector3DPGA,
+) -> Vector3DPGA {
+    return Vector3DPGA(-bivector.bulk * trivector.bulk, dot(bivector.bulk, trivector.weight));
 }
 
 // Misc
 fn shift_plane(
-    vector: vec4<f32>,
+    vector: Vector3DPGA,
     offset: f32,
-) -> vec4<f32> {
-    return vec4(vector.xyz, vector.w + offset * length(vector.xyz));
+) -> Vector3DPGA {
+    return Vector3DPGA(vector.bulk, vector.weight + offset * length(vector.bulk));
 }
 
 
@@ -92,20 +121,20 @@ fn compute_bounding_geometry_non_collinear(
     quadratic_bezier: QuadraticBezier,
     radius: f32,
 ) -> GeometryVertices {
-    let point_0 = vec4(quadratic_bezier.position_0, 1.0);
-    let point_1 = vec4(quadratic_bezier.position_1, 1.0);
-    let point_2 = vec4(quadratic_bezier.position_2, 1.0);
+    let point_0 = Trivector3DPGA(1.0, quadratic_bezier.position_0);
+    let point_1 = Trivector3DPGA(1.0, quadratic_bezier.position_1);
+    let point_2 = Trivector3DPGA(1.0, quadratic_bezier.position_2);
     let line_01 = point_antiwedge_point(point_0, point_1);
     let line_12 = point_antiwedge_point(point_1, point_2);
     let line_20 = point_antiwedge_point(point_2, point_0);
     let plane = line_antiwedge_point(line_20, point_1);
-    let extended_plane_01 = shift_plane(plane_dot_line(plane, line_01), -radius);
-    let extended_plane_12 = shift_plane(plane_dot_line(plane, line_12), -radius);
-    let extended_plane_20 = shift_plane(plane_dot_line(plane, line_20), -radius);
+    let extended_plane_01 = shift_plane(plane_dot_line(plane, line_01), radius);
+    let extended_plane_12 = shift_plane(plane_dot_line(plane, line_12), radius);
+    let extended_plane_20 = shift_plane(plane_dot_line(plane, line_20), radius);
     let extended_plane_0 = shift_plane(line_dot_point(line_01, point_0), -radius);
     let extended_plane_2 = shift_plane(line_dot_point(line_12, point_2), radius);
-    let upper_plane = shift_plane(plane, radius);
-    let lower_plane = shift_plane(plane, -radius);
+    let upper_plane = shift_plane(plane, -radius);
+    let lower_plane = shift_plane(plane, radius);
     let perp_line_1 = plane_wedge_plane(extended_plane_01, extended_plane_12);
     let perp_line_01 = plane_wedge_plane(extended_plane_01, extended_plane_0);
     let perp_line_21 = plane_wedge_plane(extended_plane_12, extended_plane_2);
@@ -122,16 +151,16 @@ fn compute_bounding_geometry_non_collinear(
     let lower_point_02 = plane_wedge_line(lower_plane, perp_line_02);
     let lower_point_20 = plane_wedge_line(lower_plane, perp_line_20);
     return GeometryVertices(array(
-        upper_point_1.xyz / upper_point_1.w,
-        upper_point_01.xyz / upper_point_01.w,
-        upper_point_02.xyz / upper_point_02.w,
-        upper_point_20.xyz / upper_point_20.w,
-        upper_point_21.xyz / upper_point_21.w,
-        lower_point_1.xyz / lower_point_1.w,
-        lower_point_01.xyz / lower_point_01.w,
-        lower_point_02.xyz / lower_point_02.w,
-        lower_point_20.xyz / lower_point_20.w,
-        lower_point_21.xyz / lower_point_21.w,
+        upper_point_1.weight / upper_point_1.bulk,
+        upper_point_01.weight / upper_point_01.bulk,
+        upper_point_02.weight / upper_point_02.bulk,
+        upper_point_20.weight / upper_point_20.bulk,
+        upper_point_21.weight / upper_point_21.bulk,
+        lower_point_1.weight / lower_point_1.bulk,
+        lower_point_01.weight / lower_point_01.bulk,
+        lower_point_02.weight / lower_point_02.bulk,
+        lower_point_20.weight / lower_point_20.bulk,
+        lower_point_21.weight / lower_point_21.bulk,
     ));
 }
 
