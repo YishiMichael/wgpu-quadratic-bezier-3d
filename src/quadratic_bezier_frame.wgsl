@@ -46,6 +46,6 @@ fn fs_main(
 ) -> @location(0) vec4<f32> {
     let intensity = textureLoad(t_intensity, vec2<u32>(in.uv * vec2<f32>(textureDimensions(t_intensity))), 0).r;
     let rescaled_intensity = clamp(intensity * u_style.intensity_factor, 0.0, 1.0);
-    let rgb = s_colormap[u32(rescaled_intensity * 255.0)];
+    let rgb = s_colormap[u32(rescaled_intensity * f32(arrayLength(&s_colormap) - 1))];
     return vec4(rgb.value, 1.0);
 }

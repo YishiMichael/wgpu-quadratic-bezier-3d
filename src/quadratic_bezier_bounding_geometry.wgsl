@@ -224,9 +224,9 @@ fn compute_bounding_geometry(
 
 @compute @workgroup_size(64)
 fn cs_main(
-    @builtin(global_invocation_id) global_id: vec3<u32>,
+    @builtin(global_invocation_id) global_invocation_id: vec3<u32>,
 ) {
-    let index = global_id.x;
+    let index = global_invocation_id.x;
 
     let quadratic_bezier = s_in[index];
     var geometry = compute_bounding_geometry(quadratic_bezier, u_style.thickness / 2.0);

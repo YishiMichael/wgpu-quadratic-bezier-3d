@@ -2,10 +2,7 @@
 
 mod colormap;
 
-use std::borrow::Cow;
-use std::sync::Arc;
-
-use encase::{ShaderSize, ShaderType};
+use encase::ShaderType;
 
 
 #[derive(ShaderType)]
@@ -52,7 +49,7 @@ struct Vertex {
 
 
 struct State<'window> {
-    window: Arc<winit::window::Window>,
+    window: std::sync::Arc<winit::window::Window>,
     surface: wgpu::Surface<'window>,
     device: wgpu::Device,
     queue: wgpu::Queue,
@@ -74,7 +71,7 @@ struct State<'window> {
 }
 
 impl<'window> State<'window> {
-    async fn new(window: Arc<winit::window::Window>, curve_len: usize) -> Self {
+    async fn new(window: std::sync::Arc<winit::window::Window>, curve_len: usize) -> Self {
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
             backends: wgpu::Backends::PRIMARY,
             ..Default::default()
@@ -143,7 +140,7 @@ impl<'window> State<'window> {
                     ty: wgpu::BindingType::Buffer {
                         ty: wgpu::BufferBindingType::Uniform,
                         has_dynamic_offset: false,
-                        min_binding_size: Some(CameraUniform::SHADER_SIZE),
+                        min_binding_size: Some(CameraUniform::min_size()),
                     },
                     count: None,
                 },
@@ -154,7 +151,7 @@ impl<'window> State<'window> {
                     ty: wgpu::BindingType::Buffer {
                         ty: wgpu::BufferBindingType::Uniform,
                         has_dynamic_offset: false,
-                        min_binding_size: Some(ModelUniform::SHADER_SIZE),
+                        min_binding_size: Some(ModelUniform::min_size()),
                     },
                     count: None,
                 },
@@ -165,7 +162,7 @@ impl<'window> State<'window> {
                     ty: wgpu::BindingType::Buffer {
                         ty: wgpu::BufferBindingType::Uniform,
                         has_dynamic_offset: false,
-                        min_binding_size: Some(StyleUniform::SHADER_SIZE),
+                        min_binding_size: Some(StyleUniform::min_size()),
                     },
                     count: None,
                 },
@@ -183,7 +180,7 @@ impl<'window> State<'window> {
                             read_only: true,
                         },
                         has_dynamic_offset: false,
-                        min_binding_size: Some(Rgb::SHADER_SIZE),
+                        min_binding_size: Some(Rgb::min_size()),
                     },
                     count: None,
                 },
@@ -201,7 +198,7 @@ impl<'window> State<'window> {
                             read_only: true,
                         },
                         has_dynamic_offset: false,
-                        min_binding_size: Some(QuadraticBezier::SHADER_SIZE),
+                        min_binding_size: Some(QuadraticBezier::min_size()),
                     },
                     count: None,
                 },
@@ -214,7 +211,7 @@ impl<'window> State<'window> {
                             read_only: false,
                         },
                         has_dynamic_offset: false,
-                        min_binding_size: Some(Vertex::SHADER_SIZE),
+                        min_binding_size: Some(Vertex::min_size()),
                     },
                     count: None,
                 },
@@ -255,7 +252,7 @@ impl<'window> State<'window> {
         let bounding_geometry_pipeline = {
             let shader_module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
                 label: None,
-                source: wgpu::ShaderSource::Wgsl(Cow::Borrowed(include_str!("quadratic_bezier_bounding_geometry.wgsl"))),
+                source: wgpu::ShaderSource::Wgsl(std::borrow::Cow::Borrowed(include_str!("quadratic_bezier_bounding_geometry.wgsl"))),
             });
             let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                 label: None,
@@ -276,7 +273,7 @@ impl<'window> State<'window> {
         let intensity_pipeline = {
             let shader_module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
                 label: None,
-                source: wgpu::ShaderSource::Wgsl(Cow::Borrowed(include_str!("quadratic_bezier_intensity.wgsl"))),
+                source: wgpu::ShaderSource::Wgsl(std::borrow::Cow::Borrowed(include_str!("quadratic_bezier_intensity.wgsl"))),
             });
             let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                 label: None,
@@ -294,7 +291,7 @@ impl<'window> State<'window> {
                     compilation_options: Default::default(),
                     buffers: &[
                         wgpu::VertexBufferLayout {
-                            array_stride: Vertex::SHADER_SIZE.get(),
+                            array_stride: Vertex::min_size().get(),
                             step_mode: wgpu::VertexStepMode::Vertex,
                             attributes: &[
                                 wgpu::VertexAttribute {
@@ -385,7 +382,7 @@ impl<'window> State<'window> {
         let frame_pipeline = {
             let shader_module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
                 label: None,
-                source: wgpu::ShaderSource::Wgsl(Cow::Borrowed(include_str!("quadratic_bezier_frame.wgsl"))),
+                source: wgpu::ShaderSource::Wgsl(std::borrow::Cow::Borrowed(include_str!("quadratic_bezier_frame.wgsl"))),
             });
             let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                 label: None,
@@ -482,31 +479,31 @@ impl<'window> State<'window> {
         });
         let camera_uniform_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: None,
-            size: CameraUniform::SHADER_SIZE.into(),
+            size: CameraUniform::min_size().get(),
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,  // TODO: MAP_WRITE ?
             mapped_at_creation: false,
         });
         let model_uniform_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: None,
-            size: ModelUniform::SHADER_SIZE.into(),
+            size: ModelUniform::min_size().get(),
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
         let style_uniform_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: None,
-            size: StyleUniform::SHADER_SIZE.into(),
+            size: StyleUniform::min_size().get(),
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
         let quadratic_bezier_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: None,
-            size: curve_len as u64 * QuadraticBezier::SHADER_SIZE.get(),
+            size: curve_len as u64 * QuadraticBezier::min_size().get(),
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
         let vertex_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: None,
-            size: curve_len as u64 * 10 * Vertex::SHADER_SIZE.get(),
+            size: curve_len as u64 * 10 * Vertex::min_size().get(),
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::VERTEX,
             mapped_at_creation: false,
         });
@@ -522,7 +519,7 @@ impl<'window> State<'window> {
             });
             let buffer = device.create_buffer(&wgpu::BufferDescriptor {
                 label: None,
-                size: colormap_data.len() as u64 * Rgb::SHADER_SIZE.get(),
+                size: colormap_data.len() as u64 * Rgb::min_size().get(),
                 usage: wgpu::BufferUsages::STORAGE,
                 mapped_at_creation: true,
             });
@@ -757,8 +754,9 @@ impl winit::application::ApplicationHandler for App {
         if self.state.is_some() {
             return;
         }
+        let window_attributes = winit::window::Window::default_attributes().with_inner_size(self.window_size);
         let state = pollster::block_on(State::new(
-            Arc::new(active_event_loop.create_window(winit::window::Window::default_attributes().with_inner_size(self.window_size)).unwrap()),
+            std::sync::Arc::new(active_event_loop.create_window(window_attributes).unwrap()),
             self.curve_data.len(),
         ));
         self.state = Some(state);
